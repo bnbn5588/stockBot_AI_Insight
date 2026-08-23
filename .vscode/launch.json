@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "worker.main",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "worker.main",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "worker.main_news",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "worker.main_news",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}

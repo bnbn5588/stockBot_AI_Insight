@@ -115,7 +115,7 @@ route.ts's original `EX 90000`) so nothing bleeds into the next trading day.
 |-----------------------------------|----------------|-------------------------------------------------------------------------|
 | `ai-analysis:{date}`             | `main.py`      | The production result — `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `prompt`. **This is what `stock-dashboard` reads.** |
 | `ai-analysis-prompt:{date}`      | `main.py`      | The same prompt string, stored on its own key for easy inspection without pulling the whole result. |
-| `ai-analysis-news:{date}`        | `main_news.py` | `generatedAt`, `newsHighlights`, `model`, `fetchedAt`, `prompt`. Not read by the frontend. |
+| `ai-analysis-news:{date}`        | `main_news.py` | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `prompt`. Not read by the frontend. |
 | `ai-analysis-news-prompt:{date}` | `main_news.py` | The news-only prompt string, stored on its own key. |
 
 ## Two analyses, not overlapping
@@ -134,9 +134,13 @@ signal-only analysis and depends on its output: reads `topPicks` + `riskWatch` +
 any signal-change ticker from the cached `ai-analysis:{date}`, and asks Claude to
 search news for exactly those tickers — nothing else, and it's explicitly told the
 quant reasoning is already done and not its job to repeat. Returns only
-`newsHighlights` (`ticker`, `summary`, `source`, `publishedDate`). Rules against
-fabrication: only tickers from the flagged list, real source/date from an actual
-search result, omit (don't stub) a ticker with no relevant news.
+`newsHighlights` (`ticker`, `summary`, `source`, `publishedDate`, `recommendation`).
+`recommendation` is scoped to that one ticker's news — whether it reinforces, tempers,
+or contradicts the specific flagged reason (expectancy, streak, confidence) — not a
+standalone buy/sell call or a re-derived `portfolioNote`. Rules against fabrication:
+only tickers from the flagged list, real source/date from an actual search result, omit
+(don't stub) a ticker with no relevant news, no new quantitative figures invented in the
+recommendation.
 
 This keeps candidate selection deterministic (Python-computed from the already-cached
 analysis) rather than having the model re-guess which tickers matter, so the two layers
