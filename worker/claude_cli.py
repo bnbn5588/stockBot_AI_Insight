@@ -15,10 +15,14 @@ v2.1.241 — verify again if the CLI version changes):
    prompt includes static directory-listing/env context, which otherwise
    leaks into the response (e.g. it name-drops random files it "noticed").
 
-Tool access is disabled (`--tools ""`) — otherwise Claude Code runs its normal
-agentic coding-assistant loop. `--json-schema` forces the reply to match
-ANALYSIS_JSON_SCHEMA exactly, returned pre-parsed in the envelope's
-`structured_output` field.
+`get_analysis` disables tool access entirely (`--tools ""`) — otherwise
+Claude Code runs its normal agentic coding-assistant loop. `get_news_highlights`
+allows only WebSearch/WebFetch, for the news-only prompt (prompt_news.py) —
+that reintroduces multi-turn tool-use behavior, so treat it as less
+predictable/slower than the signal-only path until proven out.
+
+`--json-schema` forces the reply to match the given schema exactly, returned
+pre-parsed in the envelope's `structured_output` field.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ import tempfile
 from typing import Any, Dict
 
 DEFAULT_TIMEOUT_SECONDS = 300
+NEWS_TIMEOUT_SECONDS = 480  # web search adds turns/latency
 
 _TICKER_ITEM_SCHEMA = {
     "type": "object",
@@ -48,6 +53,26 @@ ANALYSIS_JSON_SCHEMA: Dict[str, Any] = {
         "portfolioNote": {"type": "string"},
     },
     "required": ["generatedAt", "marketSummary", "topPicks", "riskWatch", "portfolioNote"],
+}
+
+_NEWS_HIGHLIGHT_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ticker": {"type": "string"},
+        "summary": {"type": "string"},
+        "source": {"type": "string"},
+        "publishedDate": {"type": "string"},
+    },
+    "required": ["ticker", "summary", "source", "publishedDate"],
+}
+
+NEWS_ONLY_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "generatedAt": {"type": "string"},
+        "newsHighlights": {"type": "array", "items": _NEWS_HIGHLIGHT_ITEM_SCHEMA},
+    },
+    "required": ["generatedAt", "newsHighlights"],
 }
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -79,20 +104,31 @@ def _clean_env() -> Dict[str, str]:
     }
 
 
-def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
-    """Runs prompt through `claude -p` (headless, no tool access, schema-
-    constrained output) and returns the parsed analysis dict."""
+def _run_cli(
+    prompt: str,
+    schema: Dict[str, Any],
+    tools: str,
+    timeout_seconds: int,
+    bypass_permissions: bool = False,
+) -> Dict[str, Any]:
     binary = _find_claude_binary()
+
+    cmd = [
+        binary, "-p",
+        "--output-format", "json",
+        "--tools", tools,
+        "--json-schema", json.dumps(schema),
+    ]
+    if bypass_permissions:
+        # Safe here only because `tools` is restricted to non-destructive
+        # tools (WebSearch/WebFetch) by the caller — never pass this with
+        # Bash/Edit/Write allowed.
+        cmd += ["--permission-mode", "bypassPermissions"]
 
     with tempfile.TemporaryDirectory(prefix="ai-analysis-cli-") as isolated_cwd:
         try:
             proc = subprocess.run(
-                [
-                    binary, "-p",
-                    "--output-format", "json",
-                    "--tools", "",
-                    "--json-schema", json.dumps(ANALYSIS_JSON_SCHEMA),
-                ],
+                cmd,
                 input=prompt,
                 env=_clean_env(),
                 capture_output=True,
@@ -133,3 +169,20 @@ def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) ->
     if not match:
         raise ClaudeCLIError("Could not extract JSON from Claude response")
     return json.loads(match.group(0))
+
+
+def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    """Runs prompt through `claude -p` (headless, no tool access, schema-
+    constrained output) and returns the parsed analysis dict."""
+    return _run_cli(prompt, ANALYSIS_JSON_SCHEMA, tools="", timeout_seconds=timeout_seconds)
+
+
+def get_news_highlights(prompt: str, timeout_seconds: int = NEWS_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    """Runs prompt through `claude -p` with WebSearch/WebFetch allowed (no
+    filesystem/Bash access), returning only {generatedAt, newsHighlights}.
+    Slower and less predictable than get_analysis — tool use reintroduces
+    multi-turn behavior."""
+    return _run_cli(
+        prompt, NEWS_ONLY_JSON_SCHEMA, tools="WebSearch,WebFetch",
+        timeout_seconds=timeout_seconds, bypass_permissions=True,
+    )

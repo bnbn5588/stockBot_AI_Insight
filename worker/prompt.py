@@ -1,6 +1,8 @@
 """Builds the exact Claude prompt used by stock-dashboard/src/app/api/ai-analysis/route.ts.
-Keep this byte-for-byte in sync with the TS template — the frontend/prompt viewer
-and any future model comparisons depend on it matching.
+Keep the data-section formatting byte-for-byte in sync with the TS template —
+the frontend/prompt viewer and any future model comparisons depend on it
+matching. `prompt_news.py` reuses `_build_data_sections` to build a second,
+web-search-aware variant on top of the same underlying data.
 """
 from __future__ import annotations
 
@@ -13,7 +15,10 @@ def _sign(v: float) -> str:
     return "+" if v >= 0 else ""
 
 
-def build_prompt(all_data: A.AllData, today: str) -> str:
+def _build_data_sections(all_data: A.AllData, today: str) -> str:
+    """Everything the model needs to see before the response-format
+    instructions: portfolio summary, signal changes, performance, snapshot
+    table, forward-return effectiveness. Shared by every prompt variant."""
     tickers = list(all_data.keys())
     consensus = A.market_consensus(all_data)
     fwd = A.aggregate_forward_returns(all_data)
@@ -83,7 +88,13 @@ Current snapshot (ticker | signal | price | streak | period_return | confidence%
 {snapshot_block}
 
 Signal effectiveness — avg next-trading-day % return across all historical data:
-{fwd_line}
+{fwd_line}"""
+
+
+def build_prompt(all_data: A.AllData, today: str) -> str:
+    data_sections = _build_data_sections(all_data, today)
+
+    return f"""{data_sections}
 
 Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
 {{
