@@ -5,10 +5,9 @@ prompt, but generates the answer via the locally-authenticated `claude` CLI
 (subscription) instead of the billed Anthropic API, then writes the result
 into the same Redis cache key the Next.js frontend already reads from.
 
-Intended to run once per invocation (skips itself on Sun/Mon, no-ops if
-today's key is already cached) — schedule it externally (cron inside the
-docker image, Task Scheduler, etc.) to run daily shortly after the sheet
-updates.
+Intended to run once per invocation (no-ops if today's key is already
+cached) — schedule it externally (cron, Task Scheduler, etc.) to run daily
+shortly after the sheet updates.
 """
 from __future__ import annotations
 
@@ -28,12 +27,6 @@ from .prompt import build_prompt
 load_dotenv()
 
 SHEET_NAME = "history"
-
-
-def _is_weekend_skip(now: datetime) -> bool:
-    # ISO weekday: Monday=1 ... Sunday=7. Original (route.ts) skips JS getDay()
-    # 0 (Sunday) and 1 (Monday) — the sheet still holds Friday's close on both.
-    return now.isoweekday() in (7, 1)
 
 
 def fetch_sheet_csv(sheet_id: str) -> str:
@@ -56,10 +49,6 @@ def generate_analysis(all_data: A.AllData, today: str) -> dict:
 
 def main() -> int:
     now = datetime.now(timezone.utc)
-
-    if _is_weekend_skip(now) and not os.environ.get("FORCE_RUN"):
-        print(json.dumps({"weekend": True}))
-        return 0
 
     sheet_id = os.environ.get("SHEET_ID")
     if not sheet_id:

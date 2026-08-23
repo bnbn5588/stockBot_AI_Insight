@@ -81,15 +81,8 @@ Manual run (writes to Redis if `REDIS_URL` is set, otherwise prints the result):
 python -m worker.main
 ```
 
-The production path intentionally **skips itself on Sunday and Monday** (the sheet
-still holds Friday's stale close on both days — same rule as the original route.ts) and
-**no-ops if today's key is already cached** (avoids a redundant Claude call on reruns).
-To force a run through either guard for testing:
-```
-FORCE_RUN=1 python -m worker.main
-```
-Don't leave `FORCE_RUN=1` sitting in `.env` — it permanently disables the weekend skip
-on every run, including the real cron-scheduled one.
+The production path **no-ops if today's key is already cached**, avoiding a redundant
+Claude call on reruns.
 
 ### Scheduling (Linux)
 
@@ -108,10 +101,10 @@ topPicks/riskWatch tickers rather than re-deriving them:
 ```
 python -m worker.main_news
 ```
-Same weekend-skip / cache-skip behavior, writing to its own `ai-analysis-news:{date}`
-key — never touches the key the frontend reads. Errors out if today's `ai-analysis:{date}`
-isn't cached yet. See "Two analyses, not overlapping" below before deciding whether to
-chain this into the daily schedule.
+Same cache-skip behavior, writing to its own `ai-analysis-news:{date}` key — never
+touches the key the frontend reads. Errors out if today's `ai-analysis:{date}` isn't
+cached yet. See "Two analyses, not overlapping" below before deciding whether to chain
+this into the daily schedule.
 
 ## Redis keys
 
@@ -127,10 +120,7 @@ route.ts's original `EX 90000`) so nothing bleeds into the next trading day.
 
 ## Two analyses, not overlapping
 
-Earlier iteration had the news variant re-derive `marketSummary`/`topPicks`/`riskWatch`/
-`portfolioNote` from scratch with web search enabled — redundant work covering the same
-ground as the signal-only analysis, twice. Redesigned so each analysis has exactly one
-job:
+Each analysis has exactly one job:
 
 **Signal-only (`prompt.py`, production, `main.py`).** Pure quant analysis over the
 sheet's historical signals — streaks, win rate, expectancy, forward returns, portfolio
@@ -190,9 +180,8 @@ if the CLI version changes.
 ## Known gaps / follow-ups
 
 - `stock-dashboard/route.ts` still needs simplifying to a pure Redis reader (drop the
-  Anthropic SDK call and the `ANTHROPIC_API_KEY` gate) — not done yet, by request.
+  Anthropic SDK call and the `ANTHROPIC_API_KEY` gate).
 - News-only step isn't wired into any schedule; it's a manual follow-on tool for now
   (`python -m worker.main_news`, run after `worker.main`).
-- Docker was considered and dropped in favor of running natively on the target Linux
-  host — the `claude` CLI's OAuth login is interactive and doesn't containerize cleanly
-  without mounting host credentials in.
+- Runs natively on the target Linux host (no Docker) — the `claude` CLI's OAuth login
+  is interactive and doesn't containerize cleanly without mounting host credentials in.

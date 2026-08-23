@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from . import analytics as A
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_news_highlights
-from .main import _is_weekend_skip, fetch_sheet_csv
+from .main import fetch_sheet_csv
 from .prompt_news import NewsCandidate, build_news_only_prompt
 
 load_dotenv()
@@ -60,10 +60,6 @@ def _collect_candidates(analysis: dict, all_data: A.AllData) -> List[NewsCandida
 
 def main() -> int:
     now = datetime.now(timezone.utc)
-
-    if _is_weekend_skip(now) and not os.environ.get("FORCE_RUN"):
-        print(json.dumps({"weekend": True}))
-        return 0
 
     sheet_id = os.environ.get("SHEET_ID")
     if not sheet_id:
