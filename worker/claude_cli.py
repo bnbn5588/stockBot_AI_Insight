@@ -32,7 +32,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 DEFAULT_TIMEOUT_SECONDS = 300
 NEWS_TIMEOUT_SECONDS = 480  # web search adds turns/latency
@@ -105,13 +105,29 @@ def _clean_env() -> Dict[str, str]:
     }
 
 
+def _extract_usage(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """Token/cost accounting from the CLI's JSON envelope. totalCostUsd is the
+    equivalent API-billed value Claude Code always reports — it does not mean
+    this call was actually billed per-token; subscription usage counts
+    against the plan instead."""
+    usage = envelope.get("usage") or {}
+    return {
+        "inputTokens": usage.get("input_tokens", 0),
+        "outputTokens": usage.get("output_tokens", 0),
+        "cacheCreationInputTokens": usage.get("cache_creation_input_tokens", 0),
+        "cacheReadInputTokens": usage.get("cache_read_input_tokens", 0),
+        "thinkingTokens": (usage.get("output_tokens_details") or {}).get("thinking_tokens", 0),
+        "totalCostUsd": envelope.get("total_cost_usd", 0.0),
+    }
+
+
 def _run_cli(
     prompt: str,
     schema: Dict[str, Any],
     tools: str,
     timeout_seconds: int,
     bypass_permissions: bool = False,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     binary = _find_claude_binary()
 
     cmd = [
@@ -156,9 +172,11 @@ def _run_cli(
     if envelope.get("is_error"):
         raise ClaudeCLIError(f"claude CLI reported an error: {envelope.get('result')}")
 
+    usage = _extract_usage(envelope)
+
     structured = envelope.get("structured_output")
     if isinstance(structured, dict):
-        return structured
+        return structured, usage
 
     # Fall back to extracting JSON from the plain result text — older/newer
     # CLI versions, or --json-schema not honored for some reason.
@@ -169,20 +187,20 @@ def _run_cli(
     match = _JSON_RE.search(text)
     if not match:
         raise ClaudeCLIError("Could not extract JSON from Claude response")
-    return json.loads(match.group(0))
+    return json.loads(match.group(0)), usage
 
 
-def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
+def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Runs prompt through `claude -p` (headless, no tool access, schema-
-    constrained output) and returns the parsed analysis dict."""
+    constrained output) and returns (analysis dict, token usage dict)."""
     return _run_cli(prompt, ANALYSIS_JSON_SCHEMA, tools="", timeout_seconds=timeout_seconds)
 
 
-def get_news_highlights(prompt: str, timeout_seconds: int = NEWS_TIMEOUT_SECONDS) -> Dict[str, Any]:
+def get_news_highlights(prompt: str, timeout_seconds: int = NEWS_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Runs prompt through `claude -p` with WebSearch/WebFetch allowed (no
-    filesystem/Bash access), returning only {generatedAt, newsHighlights}.
-    Slower and less predictable than get_analysis — tool use reintroduces
-    multi-turn behavior."""
+    filesystem/Bash access), returning ({generatedAt, newsHighlights}, token
+    usage dict). Slower and less predictable than get_analysis — tool use
+    reintroduces multi-turn behavior."""
     return _run_cli(
         prompt, NEWS_ONLY_JSON_SCHEMA, tools="WebSearch,WebFetch",
         timeout_seconds=timeout_seconds, bypass_permissions=True,

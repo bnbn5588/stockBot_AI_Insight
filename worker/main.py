@@ -36,15 +36,16 @@ def fetch_sheet_csv(sheet_id: str) -> str:
     return res.text
 
 
-def generate_analysis(all_data: A.AllData, today: str) -> dict:
+def generate_analysis(all_data: A.AllData, today: str) -> tuple[dict, str]:
     prompt = build_prompt(all_data, today)
-    analysis = get_analysis(prompt)
-    return {
+    analysis, usage = get_analysis(prompt)
+    result = {
         **analysis,
         "model": os.environ.get("CLAUDE_MODEL_LABEL", "claude (subscription CLI)"),
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
-        "prompt": prompt,
+        "tokenUsage": usage,
     }
+    return result, prompt
 
 
 def main() -> int:
@@ -74,7 +75,7 @@ def main() -> int:
         return 1
 
     try:
-        result = generate_analysis(all_data, today)
+        result, prompt = generate_analysis(all_data, today)
     except ClaudeCLIError as exc:
         print(f"Claude CLI error: {exc}", file=sys.stderr)
         return 1
@@ -89,13 +90,14 @@ def main() -> int:
 
         prompt_key = R.prompt_cache_key(today)
         try:
-            redis_conn.set(prompt_key, result["prompt"], ex=R.CACHE_TTL_SECONDS)
+            redis_conn.set(prompt_key, prompt, ex=R.CACHE_TTL_SECONDS)
             print(f"Wrote prompt for {today} to Redis key '{prompt_key}'.")
         except Exception as exc:
             print(f"Failed to write prompt to Redis: {exc}", file=sys.stderr)
     else:
         print("REDIS_URL not set — analysis generated but not cached:")
         print(json.dumps(result, indent=2))
+        print(f"\nPrompt used:\n{prompt}")
 
     return 0
 

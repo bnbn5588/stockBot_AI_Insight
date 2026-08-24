@@ -97,13 +97,14 @@ def main() -> int:
         return 1
 
     candidates = _collect_candidates(analysis, all_data)
+    prompt = None
     if not candidates:
         print("No topPicks/riskWatch/signal-change tickers to search news for today.")
         result = {"generatedAt": today, "newsHighlights": []}
     else:
         prompt = build_news_only_prompt(candidates, today)
         try:
-            news = get_news_highlights(prompt)
+            news, usage = get_news_highlights(prompt)
         except ClaudeCLIError as exc:
             print(f"Claude CLI error: {exc}", file=sys.stderr)
             return 1
@@ -111,7 +112,7 @@ def main() -> int:
             **news,
             "model": os.environ.get("CLAUDE_MODEL_LABEL", "claude (subscription CLI)"),
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
-            "prompt": prompt,
+            "tokenUsage": usage,
         }
 
     try:
@@ -121,10 +122,10 @@ def main() -> int:
         print(f"Failed to write to Redis: {exc}", file=sys.stderr)
         return 1
 
-    if "prompt" in result:
+    if prompt is not None:
         prompt_key = R.news_prompt_cache_key(today)
         try:
-            redis_conn.set(prompt_key, result["prompt"], ex=R.CACHE_TTL_SECONDS)
+            redis_conn.set(prompt_key, prompt, ex=R.CACHE_TTL_SECONDS)
             print(f"Wrote news prompt for {today} to Redis key '{prompt_key}'.")
         except Exception as exc:
             print(f"Failed to write news prompt to Redis: {exc}", file=sys.stderr)

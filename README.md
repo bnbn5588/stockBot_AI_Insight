@@ -1,56 +1,35 @@
 # stockBot AI Insight — standalone analysis worker
 
-Replaces the Claude call inside `stock-dashboard`'s `GET /api/ai-analysis` route with a
-standalone Python worker. Same Google Sheet, same computed metrics, same prompt — but
-generation runs through the locally-authenticated **Claude Code CLI** (billed against a
-Claude subscription) instead of the pay-per-use Anthropic API, and the result is written
-into the same Redis cache the Next.js frontend already reads from. No frontend changes
-required.
+Fetches a Google Sheet of algorithmic trading signal history, computes portfolio
+analytics (streaks, win rate, expectancy, forward returns, portfolio simulation vs.
+buy-and-hold), and generates an AI analysis of the current signal environment via the
+locally-authenticated **Claude Code CLI** — billed against a Claude subscription, not
+pay-per-use API calls. Results are written to Redis.
 
-See [ai-analysis-prompt-logic.md](ai-analysis-prompt-logic.md) for the original
-route.ts prompt/API spec this was ported from.
-
-## How it fits with `stock-dashboard`
-
-```
-Google Sheet (SHEET_ID)                 stock-dashboard (Next.js)
-        │                                        │
-        ▼                                        │
-┌───────────────────┐     writes      ┌──────────▼──────────┐
-│  this worker       │ ───────────────▶│  Redis               │◀── reads (GET /api/ai-analysis)
-│  (cron, daily)      │                │  ai-analysis:{date}  │
-└───────────────────┘                 └──────────────────────┘
-```
-
-`stock-dashboard`'s `route.ts` still gates its Redis read behind a truthy
-`ANTHROPIC_API_KEY` check (it happens *before* the cache check). Until that route is
-simplified to a pure Redis reader, keep `ANTHROPIC_API_KEY` set to any non-empty dummy
-string in that app's env, or the frontend will 503 before ever looking at what this
-worker wrote.
+See [ai-analysis-prompt-logic.md](ai-analysis-prompt-logic.md) for the exact prompt
+template and JSON response contract.
 
 ## Project layout
 
 ```
 worker/
-  analytics.py      Port of stock-dashboard/src/lib/analytics.ts — CSV parsing, streaks,
-                     trade stats, forward returns, portfolio simulation. Only the pieces
-                     the prompt actually needs.
-  prompt.py          Builds the exact signal-only prompt (byte-for-byte match to the
-                     original route.ts template). _build_data_sections() is shared with
-                     prompt_news.py.
+  analytics.py      CSV parsing, streaks, trade stats, forward returns, portfolio
+                     simulation.
+  prompt.py          Builds the signal-only prompt. _build_data_sections() is shared
+                     with prompt_news.py.
   prompt_news.py     News-only prompt — does NOT re-derive marketSummary/topPicks/
                      riskWatch/portfolioNote. Takes ticker+reason candidates already
                      flagged by main.py's cached output and asks only for news on those.
   claude_cli.py      Shells out to the `claude` CLI instead of the Anthropic SDK.
   redis_client.py    Redis key names + TTL.
   main.py            Production entry point — signal-only analysis, writes to
-                     ai-analysis:{date} (the key stock-dashboard reads).
+                     ai-analysis:{date} and ai-analysis-prompt:{date}.
   main_news.py       Manual/experimental follow-on step — reads today's cached
                      ai-analysis:{date}, searches news only for its topPicks/riskWatch/
                      signal-change tickers, writes newsHighlights to
                      ai-analysis-news:{date} and the prompt to
-                     ai-analysis-news-prompt:{date} (separate keys, not read by the
-                     frontend). Requires main.py to have already run for today.
+                     ai-analysis-news-prompt:{date}. Requires main.py to have already
+                     run for today.
 requirements.txt
 .env.example
 run.sh               Native-path cron wrapper: loads .env, runs `python3 -m worker.main`.
@@ -70,10 +49,10 @@ claude   # interactive login — must be an active Claude subscription (Pro/Max)
 ```
 
 Then `cp .env.example .env` and fill in:
-- `SHEET_ID` — same Google Sheet ID as `stock-dashboard`.
-- `REDIS_URL` — same Redis instance as `stock-dashboard`.
-- `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model` field;
-  the frontend just displays it verbatim).
+- `SHEET_ID` — Google Sheet ID containing the signal history (7-column, no header row —
+  see `analytics.py`'s `parse_csv` for the exact format).
+- `REDIS_URL` — Redis instance to read/write results.
+- `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model` field).
 
 From here, pick one of the two paths below.
 
@@ -153,21 +132,27 @@ Docker (same mounts as above, overriding the default `CMD`):
 docker run --rm -v /path/to/.env:/app/.env:ro -v ~/.claude:/home/worker/.claude -v ~/.claude.json:/home/worker/.claude.json ai-analysis-worker python -m worker.main_news
 ```
 Same cache-skip behavior, writing to its own `ai-analysis-news:{date}` key — never
-touches the key the frontend reads. Errors out if today's `ai-analysis:{date}` isn't
-cached yet. See "Two analyses, not overlapping" below before deciding whether to chain
-this into the daily schedule.
+touches `ai-analysis:{date}`. Errors out if today's `ai-analysis:{date}` isn't cached
+yet. See "Two analyses, not overlapping" below before deciding whether to chain this
+into the daily schedule.
 
 ## Redis keys
 
-All four share the same 25h TTL (`CACHE_TTL_SECONDS` in `redis_client.py`, matching
-route.ts's original `EX 90000`) so nothing bleeds into the next trading day.
+All four share the same 25h TTL (`CACHE_TTL_SECONDS` in `redis_client.py`) so nothing
+bleeds into the next trading day.
 
 | Key                             | Written by     | Contents                                                              |
 |-----------------------------------|----------------|-------------------------------------------------------------------------|
-| `ai-analysis:{date}`             | `main.py`      | The production result — `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `prompt`. **This is what `stock-dashboard` reads.** |
-| `ai-analysis-prompt:{date}`      | `main.py`      | The same prompt string, stored on its own key for easy inspection without pulling the whole result. |
-| `ai-analysis-news:{date}`        | `main_news.py` | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `prompt`. Not read by the frontend. |
+| `ai-analysis:{date}`             | `main.py`      | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
+| `ai-analysis-prompt:{date}`      | `main.py`      | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
+| `ai-analysis-news:{date}`        | `main_news.py` | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
 | `ai-analysis-news-prompt:{date}` | `main_news.py` | The news-only prompt string, stored on its own key. |
+
+`tokenUsage` (both result keys): `inputTokens`, `outputTokens`,
+`cacheCreationInputTokens`, `cacheReadInputTokens`, `thinkingTokens`, `totalCostUsd`.
+`totalCostUsd` is the equivalent API-billed value Claude Code always reports in its
+output — it does not mean the call was actually billed per-token; subscription usage
+counts against the plan instead (see `claude_cli._extract_usage`).
 
 ## Two analyses, not overlapping
 
@@ -202,6 +187,177 @@ Bash/Edit/Write) and runs several turns instead of 1, so it's noticeably slower 
 tool-free signal-only path and has a different reliability profile. Compare a few days
 of output before deciding whether to chain it into the daily schedule.
 
+## Sample prompts and output
+
+Real captures from a live run against the actual sheet — not hand-written examples.
+
+### Signal-only (`prompt.py` → `ai-analysis:{date}`)
+
+Prompt sent to Claude:
+```
+You are reviewing algorithmic stock signals generated by a systematic trading bot. Today is 2026-08-23.
+
+Portfolio: 13 tickers | BUY: 2 | SELL: 2 | HOLD: 9
+No signal changes since yesterday.
+
+Portfolio performance (equal-weight simulation):
+Strategy +24.4% vs buy-and-hold +34.2% (equal-weight across all tickers)
+
+Current snapshot (ticker | signal | price | streak | period_return | confidence% | ADX | win_rate/expectancy):
+AAPL  | HOLD | $  309.35 | streak=HOLD×4d | period=+22.6%  | conf= 32 | adx= 25 | wr=50% exp=+1.1%
+AMD   | HOLD | $  473.25 | streak=HOLD×24d | period=+103.0% | conf= 28 | adx= 15 | wr=64% exp=+6.9%
+AMZN  | HOLD | $  258.63 | streak=HOLD×10d | period=+21.4%  | conf= 36 | adx= 20 | wr=20% exp=-4.3%
+ASML  | HOLD | $ 1763.76 | streak=HOLD×4d | period=-8.6%   | conf= 24 | adx= 19 | no_completed_trades
+CDE   | BUY  | $   20.97 | streak=BUY×3d  | period=-3.9%   | conf= 47 | adx= 40 | wr=50% exp=-2.3%
+GOOGL | HOLD | $  344.82 | streak=HOLD×25d | period=+36.1%  | conf= 36 | adx= 11 | wr=75% exp=+7.9%
+META  | SELL | $  621.71 | streak=SELL×1d | period=+0.0%   | conf=  0 | adx=  0 | no_completed_trades
+MSFT  | BUY  | $  483.24 | streak=BUY×3d  | period=-5.9%   | conf= 42 | adx= 35 | wr=33% exp=-4.9%
+MU    | HOLD | $  966.78 | streak=HOLD×5d | period=+306.3% | conf= 32 | adx= 16 | wr=83% exp=+19.3%
+NVDA  | HOLD | $  214.72 | streak=HOLD×5d | period=+17.2%  | conf= 32 | adx= 26 | wr=14% exp=-2.6%
+ORCL  | HOLD | $  146.47 | streak=HOLD×6d | period=-49.7%  | conf= 32 | adx= 25 | wr=50% exp=+3.3%
+RXT   | SELL | $    3.32 | streak=SELL×6d | period=-40.7%  | conf= 47 | adx= 28 | wr=0% exp=-48.7%
+TSM   | HOLD | $  418.95 | streak=HOLD×2d | period=+46.2%  | conf= 32 | adx= 19 | wr=67% exp=+5.6%
+
+Signal effectiveness — avg next-trading-day % return across all historical data:
+BUY: +0.148% (n=1293) | SELL: +0.146% (n=944) | HOLD: -0.002% (n=806)
+
+Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
+{
+  "generatedAt": "2026-08-23",
+  "marketSummary": "2-3 sentences on the overall signal environment — reference the BUY/SELL/HOLD split, whether the strategy is beating buy-and-hold, and any notable signal changes today",
+  "topPicks": [{"ticker": "TICK", "reason": "specific, data-backed reason in one sentence"}],
+  "riskWatch": [{"ticker": "TICK", "reason": "specific, data-backed concern in one sentence"}],
+  "portfolioNote": "1-2 sentences on portfolio health, strategy vs buy-and-hold, or actionable guidance"
+}
+
+Rules:
+- topPicks: 1–3 tickers with the strongest BUY conviction (long BUY streak, high confidence, positive expectancy, strong ADX).
+- riskWatch: 1–3 tickers on SELL signals, weak confidence, negative expectancy, or contradictions (BUY signal with negative expectancy, or SELL with positive expectancy — flag explicitly).
+- Highlight tickers that just changed signal today as momentum shifts worth watching.
+- Be specific: cite actual ticker names, streak lengths, confidence scores, or % figures.
+- Do not invent data not present above.
+```
+
+Resulting `ai-analysis:{date}` (the prompt above is stored separately at
+`ai-analysis-prompt:{date}` — not duplicated inside this object):
+```json
+{
+  "generatedAt": "2026-08-23",
+  "marketSummary": "Signals are split 2 BUY / 2 SELL / 9 HOLD across the 13-ticker portfolio, with no changes since yesterday, though META's SELL streak is only 1 day old and carries zero confidence — worth watching for a possible re-flip. The strategy is underperforming buy-and-hold (+24.4% vs +34.2%), and in aggregate HOLD signals have essentially no next-day edge (-0.002% avg) while BUY (+0.148%) and SELL (+0.146%) retain modest positive skew historically.",
+  "topPicks": [
+    {
+      "ticker": "CDE",
+      "reason": "Highest confidence (47%) and strongest trend strength (ADX 40) of any current signal on a 3-day BUY streak, though its own historical expectancy is -2.3% (wr=50%), so conviction is trend-based rather than statistically proven."
+    }
+  ],
+  "riskWatch": [
+    {
+      "ticker": "RXT",
+      "reason": "6-day SELL streak with a 0% historical win rate and -48.7% expectancy on a stock already down 40.7% over the period — the weakest signal quality in the portfolio."
+    },
+    {
+      "ticker": "MSFT",
+      "reason": "Currently a 3-day BUY streak despite a 33% win rate and -4.9% expectancy, a direct contradiction between the active signal and its historical performance."
+    },
+    {
+      "ticker": "META",
+      "reason": "Fresh 1-day SELL signal with 0% confidence, 0 ADX, and no completed trades to validate it — essentially an unproven, low-conviction flip."
+    }
+  ],
+  "portfolioNote": "The strategy is trailing simple buy-and-hold by roughly 9.8 percentage points (+24.4% vs +34.2%), and both current BUY signals (CDE, MSFT) carry negative historical expectancy, so avoid treating the BUY count as a strong entry signal right now — HOLD names like MU (wr=83%, exp=+19.3%) and GOOGL (wr=75%, exp=+7.9%) show far better track records despite not being actionable signals today.",
+  "model": "claude (subscription CLI)",
+  "fetchedAt": "2026-08-23T03:47:13.017333+00:00",
+  "tokenUsage": {
+    "inputTokens": 2,
+    "outputTokens": 5027,
+    "cacheCreationInputTokens": 7195,
+    "cacheReadInputTokens": 3900,
+    "thinkingTokens": 4136,
+    "totalCostUsd": 0.082057
+  }
+}
+```
+
+### News-only (`prompt_news.py` → `ai-analysis-news:{date}` / `ai-analysis-news-prompt:{date}`)
+
+Prompt sent to Claude, built from that same run's `topPicks`/`riskWatch` (this is the
+entire prompt — it's deliberately short, no data dump, no re-derivation):
+```
+Today is 2026-08-23. The tickers below were already flagged by a separate,
+data-driven analysis of algorithmic trading signals (shown with why each was flagged).
+Your only job here is to check for recent news on each — the quant reasoning is already
+done elsewhere and is not yours to repeat or second-guess.
+
+Flagged tickers:
+- CDE (BUY): Contradiction flag: active BUY signal despite negative expectancy of -2.3%, so the current 47% confidence is not backed by a historically profitable win record.
+- MSFT (BUY): Contradiction flag: active BUY signal despite negative expectancy of -4.9% and a 33% historical win rate, meaning past BUY signals on this ticker have not paid off.
+- RXT (SELL): SELL streak of 6 days aligns with a brutal expectancy of -48.7% and 0% win rate on completed trades, plus a -40.7% period return -- the weakest risk/reward profile in the portfolio.
+
+For each ticker, use web search to check for recent news (last 5 trading days): earnings,
+guidance changes, analyst actions, regulatory or legal events, and major price-moving
+headlines. Skip routine market commentary.
+
+Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
+{
+  "generatedAt": "2026-08-23",
+  "newsHighlights": [{"ticker": "TICK", "summary": "one sentence on what happened", "source": "publisher name", "publishedDate": "YYYY-MM-DD", "recommendation": "one sentence on whether this news reinforces, tempers, or contradicts the flagged signal, and why"}]
+}
+
+Rules:
+- Only include tickers from the flagged list above — do not search for or add others.
+- Each entry must cite a real source and an approximate date from an actual search
+  result. Never fabricate a headline, source, or date.
+- If a ticker has no relevant recent news, omit it — do not include a placeholder entry.
+- Return an empty newsHighlights array if none of the flagged tickers have relevant news.
+- recommendation must reference the specific flagged reason (e.g. its expectancy,
+  streak, or confidence) alongside the news — say explicitly whether the news makes the
+  existing signal more or less trustworthy. Do not invent new quantitative figures; only
+  the reason text above and the news you found are available to you.
+- recommendation is not a buy/sell instruction — frame it as how this changes conviction
+  in the already-flagged signal, not as new standalone advice.
+```
+
+Resulting `ai-analysis-news:{date}` (the prompt above is stored separately at
+`ai-analysis-news-prompt:{date}` — not duplicated inside this object):
+```json
+{
+  "generatedAt": "2026-08-23",
+  "newsHighlights": [
+    {
+      "ticker": "CDE",
+      "summary": "Coeur Mining shares slipped after the company missed Q2 production/targets even as it touted record exploration spend and a new dividend/buyback program, while Scotiabank and Roth Capital both cut price targets (to $26.50 and $19 respectively) despite keeping bullish ratings.",
+      "source": "StocksToTrade / GuruFocus",
+      "publishedDate": "2026-08-18",
+      "recommendation": "The mixed picture -- a quarterly miss and trimmed price targets alongside record exploration spend and shareholder returns -- does not resolve the contradiction flagged (BUY signal despite -2.3% historical expectancy); if anything the miss and target cuts add caution to trusting the 47%-confidence BUY."
+    },
+    {
+      "ticker": "MSFT",
+      "summary": "Microsoft stock dropped on August 17 following its blowout fiscal Q4 earnings rally, with some analysts flagging that AI infrastructure costs are rising faster than AI revenue even as capex guidance was trimmed.",
+      "source": "The Motley Fool",
+      "publishedDate": "2026-08-17",
+      "recommendation": "The pullback and analyst concern about AI cost-vs-revenue growth add a note of caution but don't materially change the underlying contradiction (BUY signal despite a 33% historical win rate and -4.9% expectancy) -- the fundamentals remain strong, so this is more a temporary wobble than new evidence against the flagged distrust of the signal."
+    },
+    {
+      "ticker": "RXT",
+      "summary": "A lawsuit was filed alleging investors were misled ahead of a 33.6% RXT stock drop, and UBS (Aug 17) and RBC Capital (Aug 12) both maintained Hold ratings following lowered revenue guidance tied to the company exiting low-margin businesses.",
+      "source": "StockTitan / Yahoo Finance",
+      "publishedDate": "2026-08-17",
+      "recommendation": "The securities lawsuit and guidance cuts reinforce the flagged SELL signal's brutal risk/reward profile (-48.7% expectancy, 0% win rate, -40.7% period return), adding legal/fundamental headwinds that corroborate rather than contradict the existing bearish streak."
+    }
+  ],
+  "model": "claude (subscription CLI)",
+  "fetchedAt": "2026-08-23T15:55:23.946854+00:00",
+  "tokenUsage": {
+    "inputTokens": 8,
+    "outputTokens": 2229,
+    "cacheCreationInputTokens": 23974,
+    "cacheReadInputTokens": 60442,
+    "thinkingTokens": 741,
+    "totalCostUsd": 0.3147294
+  }
+}
+```
+
 ## `claude_cli.py` — non-obvious CLI behavior
 
 Found by trial and error against Claude Code CLI v2.1.241 running on Windows; re-verify
@@ -232,12 +388,12 @@ if the CLI version changes.
 5. **`--json-schema` + `--output-format json`** returns a pre-parsed, schema-validated
    dict in the envelope's `structured_output` field — no markdown fences, no prose to
    regex out. `_run_cli()` falls back to regex-extracting JSON from the `result` text
-   field if `structured_output` isn't present, for CLI-version robustness.
+   field if `structured_output` isn't present, for CLI-version robustness. The same
+   envelope also carries `usage`/`total_cost_usd`, captured by `_extract_usage()` into
+   each result's `tokenUsage` field.
 
 ## Known gaps / follow-ups
 
-- `stock-dashboard/route.ts` still needs simplifying to a pure Redis reader (drop the
-  Anthropic SDK call and the `ANTHROPIC_API_KEY` gate).
 - News-only step isn't wired into any schedule; it's a manual follow-on tool for now
   (`python -m worker.main_news`, run after `worker.main`).
 - Docker path requires `claude`'s login to happen on the host first (Node/npm on the
