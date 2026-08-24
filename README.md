@@ -53,53 +53,104 @@ worker/
                      frontend). Requires main.py to have already run for today.
 requirements.txt
 .env.example
-run.sh               Cron wrapper: loads .env, runs `python3 -m worker.main`.
+run.sh               Native-path cron wrapper: loads .env, runs `python3 -m worker.main`.
+Dockerfile            Docker-path image: Python worker + Node.js + the `claude` CLI.
+.dockerignore
 ```
 
 ## Setup
 
+Both deployment paths need `claude` logged in once with an active subscription — the
+worker shells out to it, so it must be on `PATH` and authenticated for whichever
+account actually runs the job:
+```
+npm install -g @anthropic-ai/claude-code
+claude   # interactive login — must be an active Claude subscription (Pro/Max),
+         # not an ANTHROPIC_API_KEY, or you're back to pay-per-use billing.
+```
+
+Then `cp .env.example .env` and fill in:
+- `SHEET_ID` — same Google Sheet ID as `stock-dashboard`.
+- `REDIS_URL` — same Redis instance as `stock-dashboard`.
+- `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model` field;
+  the frontend just displays it verbatim).
+
+From here, pick one of the two paths below.
+
+### Native (Python installed directly on the host)
+
 1. `pip install -r requirements.txt` (a venv is recommended).
-2. `cp .env.example .env` and fill in:
-   - `SHEET_ID` — same Google Sheet ID as `stock-dashboard`.
-   - `REDIS_URL` — same Redis instance as `stock-dashboard`.
-   - `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model`
-     field; the frontend just displays it verbatim).
-3. Install and log into the Claude Code CLI on whichever machine will actually run this:
+2. Manual run (writes to Redis if `REDIS_URL` is set, otherwise prints the result):
    ```
-   npm install -g @anthropic-ai/claude-code
-   claude   # interactive login — must be an active Claude subscription (Pro/Max),
-            # not an ANTHROPIC_API_KEY, or you're back to pay-per-use billing.
+   python -m worker.main
    ```
-   The worker calls `claude` via subprocess, so it must be on `PATH` and already
-   authenticated for whichever OS user runs the job (cron runs as a specific user —
-   make sure the login persisted for that user, not just your interactive shell).
+3. Schedule it: `run.sh` loads `.env` (cron's own environment is otherwise empty) and
+   runs the worker. Add a crontab entry for whichever user is logged into `claude`:
+   ```
+   35 8 * * * /path/to/stockBot_AI_Insight/run.sh >> /var/log/ai-analysis.log 2>&1
+   ```
 
-## Running
+### Docker (host Python/pip stays untouched)
 
-Manual run (writes to Redis if `REDIS_URL` is set, otherwise prints the result):
-```
-python -m worker.main
-```
+The worker's Python dependencies live entirely inside the image. `claude` still has to
+run *inside* the container too (it's a subprocess of the worker), so the image bundles
+Node.js + the CLI — but its login is interactive and can't happen at build time, so the
+container reuses the login already completed on the host by bind-mounting `~/.claude`
+in at runtime.
 
-The production path **no-ops if today's key is already cached**, avoiding a redundant
-Claude call on reruns.
+The container runs as a non-root `worker` user (`HOME=/home/worker`), not root —
+required because the news-only step's `--permission-mode bypassPermissions` (needed to
+actually execute WebSearch/WebFetch, see `claude_cli.py` point 4 below) is refused by
+the CLI when running as root, as a safety guardrail. That means credentials mount to
+`/home/worker/...`, not `/root/...`.
 
-### Scheduling (Linux)
+1. Run `npm install -g @anthropic-ai/claude-code` and `claude` (the login step above)
+   directly on the server — this only touches Node/npm, not Python.
+2. Build the image:
+   ```
+   docker build -t ai-analysis-worker .
+   ```
+3. Manual run. Three things to get right:
+   - Mount `.env` as a file, not `--env-file` — Docker's `--env-file` doesn't strip
+     quotes, and `.env` values like `REDIS_URL="redis://..."` need that; the worker's
+     `load_dotenv()` handles it correctly when `.env` is mounted as a file instead.
+   - Mount **both** `~/.claude` (directory) and `~/.claude.json` (a separate file at
+     the home directory root) — Claude Code's config isn't only in the directory.
+   - Replace `~` below with whichever host user actually ran `claude` login (e.g.
+     `/home/ubuntu/.claude` if not root).
+   ```
+   docker run --rm \
+     -v /path/to/stockBot_AI_Insight/.env:/app/.env:ro \
+     -v ~/.claude:/home/worker/.claude \
+     -v ~/.claude.json:/home/worker/.claude.json \
+     ai-analysis-worker
+   ```
+   If the mounted files aren't readable/writable by the container (permission denied,
+   or `.claude.json` "not found" despite the mount) — the bind-mounted files keep the
+   host's UID/GID, which may not match the container's `worker` user. Add
+   `--user $(id -u):$(id -g)` to the `docker run` command to run the container as the
+   same host user that owns those files instead.
+4. Schedule it — same `docker run` command in crontab:
+   ```
+   35 8 * * * docker run --rm -v /path/to/stockBot_AI_Insight/.env:/app/.env:ro -v /home/ubuntu/.claude:/home/worker/.claude -v /home/ubuntu/.claude.json:/home/worker/.claude.json ai-analysis-worker >> /var/log/ai-analysis.log 2>&1
+   ```
+5. Rebuild (`docker build -t ai-analysis-worker .`) whenever `worker/*.py` or
+   `requirements.txt` changes — the running container won't pick up code changes on
+   its own.
 
-`run.sh` loads `.env` (cron's own environment is otherwise empty) and runs the worker.
-Add a crontab entry for whichever user is logged into `claude`:
-```
-35 8 * * * /path/to/stockBot_AI_Insight/run.sh >> /var/log/ai-analysis.log 2>&1
-```
-Adjust the time to whenever the sheet actually updates for you (currently set to 5
-minutes after the assumed 08:30 update).
+Adjust the schedule time in either path to whenever the sheet actually updates for you
+(currently set to 5 minutes after the assumed 08:30 update).
 
 ### News-only step (experimental, not scheduled)
 
-Run *after* `worker.main` has produced today's analysis — this step reads its
-topPicks/riskWatch tickers rather than re-deriving them:
+Run *after* the production analysis for today exists — this step reads its
+topPicks/riskWatch tickers rather than re-deriving them. Native:
 ```
 python -m worker.main_news
+```
+Docker (same mounts as above, overriding the default `CMD`):
+```
+docker run --rm -v /path/to/.env:/app/.env:ro -v ~/.claude:/home/worker/.claude -v ~/.claude.json:/home/worker/.claude.json ai-analysis-worker python -m worker.main_news
 ```
 Same cache-skip behavior, writing to its own `ai-analysis-news:{date}` key — never
 touches the key the frontend reads. Errors out if today's `ai-analysis:{date}` isn't
@@ -175,7 +226,9 @@ if the CLI version changes.
    without a human present to approve them (visible via `permission_denials` in the raw
    JSON envelope). `get_news_highlights` adds `--permission-mode bypassPermissions` —
    safe here specifically because `tools` is restricted to non-destructive
-   `WebSearch`/`WebFetch`; never combine that flag with Bash/Edit/Write access.
+   `WebSearch`/`WebFetch`; never combine that flag with Bash/Edit/Write access. The CLI
+   also refuses this flag outright when running as root — the Docker image runs as a
+   non-root `worker` user for exactly this reason.
 5. **`--json-schema` + `--output-format json`** returns a pre-parsed, schema-validated
    dict in the envelope's `structured_output` field — no markdown fences, no prose to
    regex out. `_run_cli()` falls back to regex-extracting JSON from the `result` text
@@ -187,5 +240,9 @@ if the CLI version changes.
   Anthropic SDK call and the `ANTHROPIC_API_KEY` gate).
 - News-only step isn't wired into any schedule; it's a manual follow-on tool for now
   (`python -m worker.main_news`, run after `worker.main`).
-- Runs natively on the target Linux host (no Docker) — the `claude` CLI's OAuth login
-  is interactive and doesn't containerize cleanly without mounting host credentials in.
+- Docker path requires `claude`'s login to happen on the host first (Node/npm on the
+  host, separate from the containerized Python) — the OAuth flow is interactive and
+  can't run inside a container build step, so the container reuses the host's
+  credentials via a bind mount rather than logging in itself.
+- Docker image isn't auto-rebuilt on code changes — `docker build` has to be rerun
+  manually after editing `worker/*.py` or `requirements.txt`.
