@@ -55,6 +55,9 @@ Then `cp .env.example .env` and fill in:
   see `analytics.py`'s `parse_csv` for the exact format).
 - `REDIS_URL` — Redis instance to read/write results.
 - `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model` field).
+- `NEWS_LOOKBACK_DAYS` — `worker.main_news` only, default `2`. How far back its web
+  search looks for news. Keep it short if you're running that step several times a
+  day — a wide window just re-returns the same older headlines on every run.
 
 From here, pick one of the two paths below.
 
@@ -307,25 +310,31 @@ Resulting `ai-analysis:{date}` (the prompt above is stored separately at
 ### News-only (`prompt_news.py` → `ai-analysis-news:{date}` / `ai-analysis-news-prompt:{date}`)
 
 Prompt sent to Claude, built from that same run's `topPicks`/`riskWatch` (this is the
-entire prompt — it's deliberately short, no data dump, no re-derivation):
+entire prompt — it's deliberately short, no data dump, no re-derivation). Note the
+`lookback_days`-controlled window (default 2 days, `NEWS_LOOKBACK_DAYS` env var to
+change it) — kept short because this step has no cache-skip and is meant to be run
+several times a day; a wide window would just re-return the same older headlines on
+every run instead of surfacing what's actually new since the last one:
 ```
-Today is 2026-08-23. The tickers below were already flagged by a separate,
+Today is 2026-08-24. The tickers below were already flagged by a separate,
 data-driven analysis of algorithmic trading signals (shown with why each was flagged).
 Your only job here is to check for recent news on each — the quant reasoning is already
 done elsewhere and is not yours to repeat or second-guess.
 
 Flagged tickers:
-- CDE (BUY): Contradiction flag: active BUY signal despite negative expectancy of -2.3%, so the current 47% confidence is not backed by a historically profitable win record.
-- MSFT (BUY): Contradiction flag: active BUY signal despite negative expectancy of -4.9% and a 33% historical win rate, meaning past BUY signals on this ticker have not paid off.
-- RXT (SELL): SELL streak of 6 days aligns with a brutal expectancy of -48.7% and 0% win rate on completed trades, plus a -40.7% period return -- the weakest risk/reward profile in the portfolio.
+- CDE (BUY): Strongest technical setup among current BUY signals — 4-day streak, highest confidence in the book at 47%, and ADX=40 signaling a firm trend, though its expectancy is still negative (-2.3%) so size accordingly.
+- RXT (SELL): 7-day SELL streak with a 0% historical win rate and -48.7% expectancy alongside a -40.7% period return — the weakest signal quality in the portfolio.
+- MSFT (BUY): Active BUY signal (4-day streak, conf=42) contradicts its own historical performance: 33% win rate and -4.9% expectancy, plus a -5.9% period return.
+- META (SELL): SELL signal is only 1 day old with 0% confidence, ADX=0, and no completed trades to validate it — low-conviction signal that could reverse quickly.
 
-For each ticker, use web search to check for recent news (last 5 trading days): earnings,
-guidance changes, analyst actions, regulatory or legal events, and major price-moving
-headlines. Skip routine market commentary.
+For each ticker, use web search to check for recent news from the last 2 days only:
+earnings, guidance changes, analyst actions, regulatory or legal events, and major
+price-moving headlines. Skip anything older than that window, and skip routine market
+commentary.
 
 Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
 {
-  "generatedAt": "2026-08-23",
+  "generatedAt": "2026-08-24",
   "newsHighlights": [{"ticker": "TICK", "summary": "one sentence on what happened", "source": "publisher name", "publishedDate": "YYYY-MM-DD", "recommendation": "one sentence on whether this news reinforces, tempers, or contradicts the flagged signal, and why"}]
 }
 
@@ -344,42 +353,30 @@ Rules:
 ```
 
 Resulting `ai-analysis-news:{date}` (the prompt above is stored separately at
-`ai-analysis-news-prompt:{date}` — not duplicated inside this object):
+`ai-analysis-news-prompt:{date}` — not duplicated inside this object). Only META had
+news inside the 2-day window — CDE/RXT/MSFT's news from a few days earlier correctly
+got excluded rather than re-surfaced:
 ```json
 {
-  "generatedAt": "2026-08-23",
+  "generatedAt": "2026-08-24",
   "newsHighlights": [
     {
-      "ticker": "CDE",
-      "summary": "Coeur Mining shares slipped after the company missed Q2 production/targets even as it touted record exploration spend and a new dividend/buyback program, while Scotiabank and Roth Capital both cut price targets (to $26.50 and $19 respectively) despite keeping bullish ratings.",
-      "source": "StocksToTrade / GuruFocus",
-      "publishedDate": "2026-08-18",
-      "recommendation": "The mixed picture -- a quarterly miss and trimmed price targets alongside record exploration spend and shareholder returns -- does not resolve the contradiction flagged (BUY signal despite -2.3% historical expectancy); if anything the miss and target cuts add caution to trusting the 47%-confidence BUY."
-    },
-    {
-      "ticker": "MSFT",
-      "summary": "Microsoft stock dropped on August 17 following its blowout fiscal Q4 earnings rally, with some analysts flagging that AI infrastructure costs are rising faster than AI revenue even as capex guidance was trimmed.",
-      "source": "The Motley Fool",
-      "publishedDate": "2026-08-17",
-      "recommendation": "The pullback and analyst concern about AI cost-vs-revenue growth add a note of caution but don't materially change the underlying contradiction (BUY signal despite a 33% historical win rate and -4.9% expectancy) -- the fundamentals remain strong, so this is more a temporary wobble than new evidence against the flagged distrust of the signal."
-    },
-    {
-      "ticker": "RXT",
-      "summary": "A lawsuit was filed alleging investors were misled ahead of a 33.6% RXT stock drop, and UBS (Aug 17) and RBC Capital (Aug 12) both maintained Hold ratings following lowered revenue guidance tied to the company exiting low-margin businesses.",
-      "source": "StockTitan / Yahoo Finance",
-      "publishedDate": "2026-08-17",
-      "recommendation": "The securities lawsuit and guidance cuts reinforce the flagged SELL signal's brutal risk/reward profile (-48.7% expectancy, 0% win rate, -40.7% period return), adding legal/fundamental headwinds that corroborate rather than contradict the existing bearish streak."
+      "ticker": "META",
+      "summary": "Meta's stock has been pressured by a combination of massive AI capex guidance ($130-145B for 2026) and escalating legal risk, including a federal trial over child safety/addictive design where a Los Angeles jury already found the company liable and a separate $375M New Mexico penalty.",
+      "source": "TipRanks",
+      "publishedDate": "2026-08-22",
+      "recommendation": "This is real, escalating negative news that adds substance to the SELL thesis, but the flagged signal is already only 1 day old with 0% confidence, ADX=0, and no completed trades to validate it — so while the news direction aligns with a bearish stance, it doesn't fix the signal's fundamental lack of statistical backing, meaning conviction should remain low despite the coincidental alignment."
     }
   ],
   "model": "claude (subscription CLI)",
-  "fetchedAt": "2026-08-23T15:55:23.946854+00:00",
+  "fetchedAt": "2026-08-24T02:44:37.365536+00:00",
   "tokenUsage": {
-    "inputTokens": 8,
-    "outputTokens": 2229,
-    "cacheCreationInputTokens": 23974,
-    "cacheReadInputTokens": 60442,
-    "thinkingTokens": 741,
-    "totalCostUsd": 0.3147294
+    "inputTokens": 10,
+    "outputTokens": 2800,
+    "cacheCreationInputTokens": 30335,
+    "cacheReadInputTokens": 95289,
+    "thinkingTokens": 1503,
+    "totalCostUsd": 0.4631168
   }
 }
 ```

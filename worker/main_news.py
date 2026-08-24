@@ -107,7 +107,8 @@ def main() -> int:
         log.info("No topPicks/riskWatch/signal-change tickers to search news for today.")
         result = {"generatedAt": today, "newsHighlights": []}
     else:
-        prompt = build_news_only_prompt(candidates, today)
+        lookback_days = int(os.environ.get("NEWS_LOOKBACK_DAYS", "2"))
+        prompt = build_news_only_prompt(candidates, today, lookback_days=lookback_days)
         try:
             news, usage = get_news_highlights(prompt)
         except ClaudeCLIError:

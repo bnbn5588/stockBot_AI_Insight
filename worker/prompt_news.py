@@ -7,10 +7,16 @@ temper, or contradict the already-flagged signal). Keeps the two analyses
 non-overlapping: one source of truth for the quant picks, one source of
 truth for news and its read on those picks.
 
+lookback_days keeps the search window tight (default 2 days) rather than a
+wide multi-day span — this step has no cache-skip and is meant to be run
+several times a day, so a short window means each run surfaces what's
+actually new since the last one instead of re-returning the same older
+headlines every time.
+
 Requires the CLI call to allow the WebSearch/WebFetch tools (see
-claude_cli.get_news_highlights) — NOT wired into the daily cron path by
-default; main_news.py runs it against whatever the production analysis
-already flagged.
+claude_cli.get_news_highlights) — not wired into any schedule by default;
+main_news.py runs it against whatever the production analysis already
+flagged.
 """
 from __future__ import annotations
 
@@ -23,10 +29,11 @@ class NewsCandidate(TypedDict):
     reason: str  # why it was flagged: topPicks/riskWatch reason text, or a signal-change note
 
 
-def build_news_only_prompt(candidates: List[NewsCandidate], today: str) -> str:
+def build_news_only_prompt(candidates: List[NewsCandidate], today: str, lookback_days: int = 2) -> str:
     candidate_lines = "\n".join(
         f"- {c['ticker']} ({c['signal']}): {c['reason']}" for c in candidates
     )
+    window = "24 hours" if lookback_days <= 1 else f"{lookback_days} days"
 
     return f"""Today is {today}. The tickers below were already flagged by a separate,
 data-driven analysis of algorithmic trading signals (shown with why each was flagged).
@@ -36,9 +43,10 @@ done elsewhere and is not yours to repeat or second-guess.
 Flagged tickers:
 {candidate_lines}
 
-For each ticker, use web search to check for recent news (last 5 trading days): earnings,
-guidance changes, analyst actions, regulatory or legal events, and major price-moving
-headlines. Skip routine market commentary.
+For each ticker, use web search to check for recent news from the last {window} only:
+earnings, guidance changes, analyst actions, regulatory or legal events, and major
+price-moving headlines. Skip anything older than that window, and skip routine market
+commentary.
 
 Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
 {{
