@@ -15,6 +15,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY worker ./worker
+COPY run_all.sh .
+RUN chmod +x run_all.sh
 
 # The news-only step needs --permission-mode bypassPermissions (see
 # claude_cli.py) to actually execute WebSearch/WebFetch — Claude Code refuses
@@ -26,6 +28,6 @@ USER worker
 
 # .env, ~/.claude, and ~/.claude.json are mounted at runtime, not baked into
 # the image — see README for the `docker run` command. CMD runs the
-# production analysis; override with `python -m worker.main_news` for the
-# news-only follow-on.
-CMD ["python", "-m", "worker.main"]
+# production analysis followed by the news-only follow-on (run_all.sh);
+# override with `python -m worker.main` alone to skip the news step.
+CMD ["./run_all.sh"]
