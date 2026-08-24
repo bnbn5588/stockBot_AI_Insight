@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -22,11 +22,13 @@ from dotenv import load_dotenv
 from . import analytics as A
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_analysis
+from .logging_setup import get_logger
 from .prompt import build_prompt
 
 load_dotenv()
 
 SHEET_NAME = "history"
+log = get_logger("main")
 
 
 def fetch_sheet_csv(sheet_id: str) -> str:
@@ -49,11 +51,13 @@ def generate_analysis(all_data: A.AllData, today: str) -> tuple[dict, str]:
 
 
 def main() -> int:
+    start = time.monotonic()
     now = datetime.now(timezone.utc)
+    log.info("Run started")
 
     sheet_id = os.environ.get("SHEET_ID")
     if not sheet_id:
-        print("SHEET_ID environment variable is not set", file=sys.stderr)
+        log.error("SHEET_ID environment variable is not set")
         return 1
 
     today = now.strftime("%Y-%m-%d")
@@ -63,42 +67,55 @@ def main() -> int:
     if redis_conn is not None:
         try:
             if redis_conn.get(key):
-                print(f"Analysis for {today} already cached — skipping Claude call.")
+                log.info("Analysis for %s already cached — skipping Claude call.", today)
                 return 0
-        except Exception as exc:
-            print(f"Redis unreachable, proceeding without cache check: {exc}", file=sys.stderr)
+        except Exception:
+            log.warning("Redis unreachable, proceeding without cache check", exc_info=True)
 
     csv_text = fetch_sheet_csv(sheet_id)
     all_data = A.parse_csv(csv_text)
     if not all_data:
-        print("No data parsed from sheet", file=sys.stderr)
+        log.error("No data parsed from sheet")
         return 1
+    log.info("Parsed %d tickers from sheet", len(all_data))
 
     try:
         result, prompt = generate_analysis(all_data, today)
-    except ClaudeCLIError as exc:
-        print(f"Claude CLI error: {exc}", file=sys.stderr)
+    except ClaudeCLIError:
+        log.error("Claude CLI error", exc_info=True)
         return 1
+
+    usage = result.get("tokenUsage", {})
+    log.info(
+        "Generated analysis for %s — topPicks=%s riskWatch=%s tokens(in=%s out=%s "
+        "thinking=%s) cost=$%.4f (subscription usage, not billed) duration=%.1fs",
+        today,
+        [p["ticker"] for p in result.get("topPicks", [])],
+        [p["ticker"] for p in result.get("riskWatch", [])],
+        usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
+        usage.get("totalCostUsd", 0.0), time.monotonic() - start,
+    )
 
     if redis_conn is not None:
         try:
             redis_conn.set(key, json.dumps(result), ex=R.CACHE_TTL_SECONDS)
-            print(f"Wrote analysis for {today} to Redis key '{key}'.")
-        except Exception as exc:
-            print(f"Failed to write to Redis: {exc}", file=sys.stderr)
+            log.info("Wrote analysis for %s to Redis key '%s'.", today, key)
+        except Exception:
+            log.error("Failed to write to Redis", exc_info=True)
             return 1
 
         prompt_key = R.prompt_cache_key(today)
         try:
             redis_conn.set(prompt_key, prompt, ex=R.CACHE_TTL_SECONDS)
-            print(f"Wrote prompt for {today} to Redis key '{prompt_key}'.")
-        except Exception as exc:
-            print(f"Failed to write prompt to Redis: {exc}", file=sys.stderr)
+            log.info("Wrote prompt for %s to Redis key '%s'.", today, prompt_key)
+        except Exception:
+            log.warning("Failed to write prompt to Redis", exc_info=True)
     else:
-        print("REDIS_URL not set — analysis generated but not cached:")
+        log.warning("REDIS_URL not set — analysis generated but not cached")
         print(json.dumps(result, indent=2))
         print(f"\nPrompt used:\n{prompt}")
 
+    log.info("Run finished in %.1fs", time.monotonic() - start)
     return 0
 
 

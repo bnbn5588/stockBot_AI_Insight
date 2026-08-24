@@ -22,21 +22,21 @@ worker/
                      flagged by main.py's cached output and asks only for news on those.
   claude_cli.py      Shells out to the `claude` CLI instead of the Anthropic SDK.
   redis_client.py    Redis key names + TTL.
+  logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
   main.py            Production entry point — signal-only analysis, writes to
                      ai-analysis:{date} and ai-analysis-prompt:{date}.
-  main_news.py       News-only follow-on step (chained by default in the Docker path
-                     via run_all.sh; run manually on the native path) — reads today's
-                     cached ai-analysis:{date}, searches news only for its
-                     topPicks/riskWatch/signal-change tickers, writes newsHighlights to
-                     ai-analysis-news:{date} and the prompt to
+  main_news.py       News-only follow-on step — independently run/scheduled from
+                     main.py. Reads today's cached ai-analysis:{date}, searches news
+                     only for its topPicks/riskWatch/signal-change tickers, writes
+                     newsHighlights to ai-analysis-news:{date} and the prompt to
                      ai-analysis-news-prompt:{date}. Requires main.py to have already
                      run for today.
 requirements.txt
 .env.example
 run.sh               Native-path cron wrapper: loads .env, runs `python3 -m worker.main`.
-run_all.sh            Docker-path default CMD: chains worker.main then worker.main_news.
 Dockerfile            Docker-path image: Python worker + Node.js + the `claude` CLI.
 .dockerignore
+log/                  Generated at runtime by logging_setup.py — gitignored.
 ```
 
 ## Setup
@@ -99,21 +99,12 @@ the CLI when running as root, as a safety guardrail. That means credentials moun
      the home directory root) — Claude Code's config isn't only in the directory.
    - Replace `~` below with whichever host user actually ran `claude` login (e.g.
      `/home/ubuntu/.claude` if not root).
-   The default `CMD` runs `run_all.sh`, which chains the production analysis and the
-   news-only follow-on in one process: `python -m worker.main && python -m
-   worker.main_news`. `set -e` semantics — if the first step fails, the second never
-   runs (it depends on the first's cached output anyway); if the second fails after the
-   first succeeds, the container's exit code reflects that failure.
    ```
    docker run --rm \
      -v /path/to/stockBot_AI_Insight/.env:/app/.env:ro \
      -v ~/.claude:/home/worker/.claude \
      -v ~/.claude.json:/home/worker/.claude.json \
      ai-analysis-worker
-   ```
-   To run only the production analysis and skip the news step, override `CMD`:
-   ```
-   docker run --rm -v /path/to/.env:/app/.env:ro -v ~/.claude:/home/worker/.claude -v ~/.claude.json:/home/worker/.claude.json ai-analysis-worker python -m worker.main
    ```
    If the mounted files aren't readable/writable by the container (permission denied,
    or `.claude.json` "not found" despite the mount) — the bind-mounted files keep the
@@ -124,21 +115,52 @@ the CLI when running as root, as a safety guardrail. That means credentials moun
    ```
    35 8 * * * docker run --rm -v /path/to/stockBot_AI_Insight/.env:/app/.env:ro -v /home/ubuntu/.claude:/home/worker/.claude -v /home/ubuntu/.claude.json:/home/worker/.claude.json ai-analysis-worker >> /var/log/ai-analysis.log 2>&1
    ```
-5. Rebuild (`docker build -t ai-analysis-worker .`) whenever `worker/*.py`,
-   `run_all.sh`, or `requirements.txt` changes — the running container won't pick up
-   code changes on its own.
+5. Rebuild (`docker build -t ai-analysis-worker .`) whenever `worker/*.py` or
+   `requirements.txt` changes — the running container won't pick up code changes on
+   its own.
 
 Adjust the schedule time to whenever the sheet actually updates for you (currently set
-to 5 minutes after the assumed 08:30 update) — leave extra headroom versus the native
-path since the combined run now takes the production analysis's time plus the news
-step's several extra turns.
+to 5 minutes after the assumed 08:30 update).
 
-### Native path: running both steps
+### News-only step
 
-`run_all.sh` (the chained `main` + `main_news` script) is Docker-specific for now —
-the native path's `run.sh` still runs only `worker.main`. To chain both natively, run
-`python -m worker.main && python -m worker.main_news` directly, or add a second crontab
-line after the first.
+Independent of `worker.main` — its own command, its own schedule, its own container.
+Native:
+```
+python -m worker.main_news
+```
+Docker (same mounts as above, overriding the default `CMD`):
+```
+docker run --rm -v /path/to/.env:/app/.env:ro -v ~/.claude:/home/worker/.claude -v ~/.claude.json:/home/worker/.claude.json ai-analysis-worker python -m worker.main_news
+```
+Add a separate crontab line for whatever cadence you want it on (independent of
+`worker.main`'s schedule). Unlike `worker.main`, this step has no cache-skip — every
+run always regenerates and overwrites `ai-analysis-news:{date}` (resetting its TTL),
+so it's safe to run several times a day for fresher news; it just always calls Claude,
+there's no "already done for today" shortcut.
+
+## Logging
+
+Every run logs to `log/worker.log` (relative to the project root) *and* stdout, so
+existing `>> /var/log/ai-analysis.log` cron redirection keeps working unchanged while
+also getting a persistent, structured file. Rotated at midnight, 14 days kept. Override
+the location with the `LOG_DIR` env var.
+
+Each run logs: start/finish with duration, ticker count parsed from the sheet,
+cache hit/skip, `topPicks`/`riskWatch` tickers (or news candidates) produced, token
+usage and cost per call, and full tracebacks on failure (`exc_info=True`) — enough to
+diagnose a bad run without re-running it.
+
+On the Docker path, `log/` is inside the container's ephemeral filesystem by default and
+disappears with `--rm`. Mount it to persist across runs:
+```
+docker run --rm \
+  -v /path/to/stockBot_AI_Insight/.env:/app/.env:ro \
+  -v ~/.claude:/home/worker/.claude \
+  -v ~/.claude.json:/home/worker/.claude.json \
+  -v /path/to/stockBot_AI_Insight/log:/app/log \
+  ai-analysis-worker
+```
 
 ## Redis keys
 
@@ -188,10 +210,8 @@ can't drift apart or contradict each other, and neither call repeats the other's
 
 Tradeoff: `claude_cli.get_news_highlights` allows `WebSearch`/`WebFetch` (never
 Bash/Edit/Write) and runs several turns instead of 1, so it's noticeably slower than the
-tool-free signal-only path and has a different reliability profile. The Docker default
-chains it after the production analysis anyway (`run_all.sh`); override `CMD` to just
-`python -m worker.main` if you'd rather run more days of it manually before trusting it
-in the scheduled path.
+tool-free signal-only path and has a different reliability profile. Run it manually a
+few times and compare output before putting it on any schedule.
 
 ## Sample prompts and output
 
@@ -400,9 +420,9 @@ if the CLI version changes.
 
 ## Known gaps / follow-ups
 
-- News-only step is chained by default in the Docker path (`run_all.sh`) but not on the
-  native path — `run.sh` there still runs only `worker.main`; chain manually or add a
-  second crontab line if you want it there too.
+- News-only step isn't wired into any schedule; it's a manual/independently-scheduled
+  tool for now (`python -m worker.main_news`, run after `worker.main` has cached
+  today's analysis).
 - Docker path requires `claude`'s login to happen on the host first (Node/npm on the
   host, separate from the containerized Python) — the OAuth flow is interactive and
   can't run inside a container build step, so the container reuses the host's
