@@ -7,6 +7,12 @@ end of its own successful run (see main_news.main()), since a final synthesis
 only makes sense immediately after a fresh news check. Can still be run
 standalone for testing:
     python -m worker.main_final
+
+No cache-skip, same as main_news.py: every invocation regenerates and
+overwrites ai-analysis-final:{date}. main_news.py has no cache-skip
+specifically so it can be run several times a day for fresher news — if this
+step still skipped once a day, chaining it after main_news.py would mean the
+final recommendation never actually reflected any of those later refreshes.
 """
 from __future__ import annotations
 
@@ -39,12 +45,8 @@ def main() -> int:
         return 1
 
     final_key = R.final_cache_key(today)
-    try:
-        if redis_conn.get(final_key):
-            log.info("Final recommendations for %s already cached — skipping Claude call.", today)
-            return 0
-    except Exception:
-        log.warning("Redis unreachable, proceeding without cache check", exc_info=True)
+    # No cache-skip here, unlike a once-a-day step — see module docstring:
+    # this always regenerates and overwrites final_key (resetting its TTL).
 
     analysis_raw = redis_conn.get(R.cache_key(today))
     if not analysis_raw:

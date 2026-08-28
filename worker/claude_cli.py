@@ -32,7 +32,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_TIMEOUT_SECONDS = 300
 NEWS_TIMEOUT_SECONDS = 480  # web search adds turns/latency
@@ -141,12 +141,38 @@ def _extract_usage(envelope: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _run_cli(
+_PROSE_FIELD_NAMES = {"summary", "reason", "marketSummary", "portfolioNote"}
+
+
+def _looks_like_lazy_stub(data: Any) -> bool:
+    """Detects the literal placeholder output Claude Code occasionally
+    produces instead of actually doing the requested reasoning — a prose
+    field (summary/reason/marketSummary/portfolioNote) being the exact word
+    "test" rather than real content. Seen when the subprocess detects itself
+    as a child of an active Claude Code session (see _clean_env), but the
+    check here is content-based rather than environment-based so it catches
+    the failure mode regardless of what's actually causing it in a given
+    deployment. Scoped to prose field names only (not ticker/stance/date/
+    model) so a ticker that happened to be named "TEST" can't false-positive
+    every attempt."""
+    def _walk(node: Any, key: Optional[str] = None) -> bool:
+        if isinstance(node, str):
+            return key in _PROSE_FIELD_NAMES and node.strip().lower() == "test"
+        if isinstance(node, dict):
+            return any(_walk(v, k) for k, v in node.items())
+        if isinstance(node, list):
+            return any(_walk(v, key) for v in node)
+        return False
+
+    return _walk(data)
+
+
+def _run_cli_once(
     prompt: str,
     schema: Dict[str, Any],
     tools: str,
     timeout_seconds: int,
-    bypass_permissions: bool = False,
+    bypass_permissions: bool,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     binary = _find_claude_binary()
 
@@ -208,6 +234,28 @@ def _run_cli(
     if not match:
         raise ClaudeCLIError("Could not extract JSON from Claude response")
     return json.loads(match.group(0)), usage
+
+
+def _run_cli(
+    prompt: str,
+    schema: Dict[str, Any],
+    tools: str,
+    timeout_seconds: int,
+    bypass_permissions: bool = False,
+    max_attempts: int = 2,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    last_stub: Tuple[Dict[str, Any], Dict[str, Any]] = ({}, {})
+    for attempt in range(1, max_attempts + 1):
+        result, usage = _run_cli_once(prompt, schema, tools, timeout_seconds, bypass_permissions)
+        if not _looks_like_lazy_stub(result):
+            return result, usage
+        last_stub = (result, usage)
+        if attempt < max_attempts:
+            continue
+    raise ClaudeCLIError(
+        f"claude CLI returned placeholder/stub output ({max_attempts} attempt(s)) "
+        f"instead of a real response: {json.dumps(last_stub[0])}"
+    )
 
 
 def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:

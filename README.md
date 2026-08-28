@@ -160,9 +160,11 @@ Not scheduled on its own — `worker.main_news` calls `main_final.main()` direct
 end of its own successful run, since a final synthesis only makes sense immediately
 after a fresh news check (see `main_news.py`'s docstring for why this is chained rather
 than cron-scheduled separately: a timing-guess cron gap risks running before the news
-step is actually done, an in-process call after confirmed success doesn't). It has its
-own cache-skip, so it only regenerates once per UTC date even if `worker.main_news`
-happens to run more than once that day. Run standalone for testing:
+step is actually done, an in-process call after confirmed success doesn't). No
+cache-skip, same as `worker.main_news` — every invocation regenerates and overwrites
+`ai-analysis-final:{date}`. If it still skipped once a day, chaining it after
+`worker.main_news` would mean the final recommendation never actually reflected any of
+`main_news`'s later same-day refreshes. Run standalone for testing:
 ```
 python -m worker.main_final
 ```
@@ -533,9 +535,25 @@ if the CLI version changes.
    field if `structured_output` isn't present, for CLI-version robustness. The same
    envelope also carries `usage`/`total_cost_usd`, captured by `_extract_usage()` into
    each result's `tokenUsage` field.
+6. **Lazy placeholder output isn't always caught by point 3's env stripping.** Point 3
+   explains the known cause (nested inside an active Claude Code session), but the same
+   symptom — schema-valid JSON with every prose field literally the word `"test"`
+   instead of real content, `thinkingTokens: 0` — has shown up in at least one Docker/cron
+   deployment where that specific env-leak shouldn't apply, so treat it as a possible
+   failure mode regardless of environment, not something env-stripping alone rules out.
+   `_looks_like_lazy_stub()` checks the actual content (only in prose fields — `summary`,
+   `reason`, `marketSummary`, `portfolioNote` — never `ticker`/`stance`/dates, so a ticker
+   that happened to be named "TEST" can't false-positive) and `_run_cli()` retries once
+   automatically before raising `ClaudeCLIError` if it keeps happening.
 
 ## Known gaps / follow-ups
 
+- **Root cause of the lazy-stub output (see `claude_cli.py` point 6) isn't actually
+  understood for the Docker/cron deployment case** — only the known cause (nested
+  Claude Code session) and a content-based detection + retry exist. If both attempts
+  in `_run_cli()` come back stubbed, the step fails loudly (`ClaudeCLIError`) rather
+  than writing garbage to Redis, but repeated failures mean something in that specific
+  environment needs actual investigation, not just retried around.
 - News-only step isn't wired into any schedule; it's a manual/independently-scheduled
   tool for now (`python -m worker.main_news`, run after `worker.main` has cached
   today's analysis).
