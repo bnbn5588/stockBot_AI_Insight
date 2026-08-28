@@ -76,6 +76,26 @@ NEWS_ONLY_JSON_SCHEMA: Dict[str, Any] = {
     "required": ["generatedAt", "newsHighlights"],
 }
 
+_FINAL_RECOMMENDATION_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ticker": {"type": "string"},
+        "stance": {"type": "string", "enum": ["favor", "caution"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["ticker", "stance", "reason"],
+}
+
+FINAL_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "generatedAt": {"type": "string"},
+        "summary": {"type": "string"},
+        "recommendations": {"type": "array", "items": _FINAL_RECOMMENDATION_ITEM_SCHEMA},
+    },
+    "required": ["generatedAt", "summary", "recommendations"],
+}
+
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -205,3 +225,11 @@ def get_news_highlights(prompt: str, timeout_seconds: int = NEWS_TIMEOUT_SECONDS
         prompt, NEWS_ONLY_JSON_SCHEMA, tools="WebSearch,WebFetch",
         timeout_seconds=timeout_seconds, bypass_permissions=True,
     )
+
+
+def get_final_recommendations(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Runs prompt through `claude -p` (headless, no tool access, schema-
+    constrained output) and returns (final recommendations dict, token usage
+    dict). Pure synthesis over the already-computed signal-only and news-only
+    results — no search needed, so this stays fast like get_analysis."""
+    return _run_cli(prompt, FINAL_JSON_SCHEMA, tools="", timeout_seconds=timeout_seconds)

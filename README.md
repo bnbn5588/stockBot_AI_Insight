@@ -20,6 +20,9 @@ worker/
   prompt_news.py     News-only prompt — does NOT re-derive marketSummary/topPicks/
                      riskWatch/portfolioNote. Takes ticker+reason candidates already
                      flagged by main.py's cached output and asks only for news on those.
+  prompt_final.py    Final-synthesis prompt — combines main.py's quant reasoning and
+                     main_news.py's news findings into one favor/caution stance per
+                     ticker. No new data, no search — pure reconciliation.
   claude_cli.py      Shells out to the `claude` CLI instead of the Anthropic SDK.
   redis_client.py    Redis key names + TTL.
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
@@ -30,7 +33,13 @@ worker/
                      only for its topPicks/riskWatch/signal-change tickers, writes
                      newsHighlights to ai-analysis-news:{date} and the prompt to
                      ai-analysis-news-prompt:{date}. Requires main.py to have already
-                     run for today.
+                     run for today. Chains into main_final.main() at the end of a
+                     successful run.
+  main_final.py      Final-synthesis step — reads today's cached ai-analysis:{date}
+                     and ai-analysis-news:{date}, writes recommendations to
+                     ai-analysis-final:{date} and the prompt to
+                     ai-analysis-final-prompt:{date}. Not scheduled on its own —
+                     invoked by main_news.py; can still be run standalone.
 requirements.txt
 .env.example
 run.sh               Native-path cron wrapper: loads .env, runs `python3 -m worker.main`.
@@ -142,6 +151,22 @@ run always regenerates and overwrites `ai-analysis-news:{date}` (resetting its T
 so it's safe to run several times a day for fresher news; it just always calls Claude,
 there's no "already done for today" shortcut.
 
+A successful run of `worker.main_news` automatically chains into `worker.main_final`
+(see below) — you don't need a separate cron line for that step.
+
+### Final-synthesis step
+
+Not scheduled on its own — `worker.main_news` calls `main_final.main()` directly at the
+end of its own successful run, since a final synthesis only makes sense immediately
+after a fresh news check (see `main_news.py`'s docstring for why this is chained rather
+than cron-scheduled separately: a timing-guess cron gap risks running before the news
+step is actually done, an in-process call after confirmed success doesn't). It has its
+own cache-skip, so it only regenerates once per UTC date even if `worker.main_news`
+happens to run more than once that day. Run standalone for testing:
+```
+python -m worker.main_final
+```
+
 ## Logging
 
 Every run logs to `log/worker.log` (relative to the project root) *and* stdout, so
@@ -167,15 +192,17 @@ docker run --rm \
 
 ## Redis keys
 
-All four share the same 25h TTL (`CACHE_TTL_SECONDS` in `redis_client.py`) so nothing
+All six share the same 25h TTL (`CACHE_TTL_SECONDS` in `redis_client.py`) so nothing
 bleeds into the next trading day.
 
-| Key                             | Written by     | Contents                                                              |
-|-----------------------------------|----------------|-------------------------------------------------------------------------|
-| `ai-analysis:{date}`             | `main.py`      | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
-| `ai-analysis-prompt:{date}`      | `main.py`      | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
-| `ai-analysis-news:{date}`        | `main_news.py` | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
-| `ai-analysis-news-prompt:{date}` | `main_news.py` | The news-only prompt string, stored on its own key. |
+| Key                              | Written by      | Contents                                                              |
+|------------------------------------|-----------------|-------------------------------------------------------------------------|
+| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
+| `ai-analysis-prompt:{date}`       | `main.py`       | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
+| `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
+| `ai-analysis-news-prompt:{date}`  | `main_news.py`  | The news-only prompt string, stored on its own key. |
+| `ai-analysis-final:{date}`        | `main_final.py` | `generatedAt`, `summary`, `recommendations` (each `ticker`/`stance`/`reason`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-final-prompt:{date}` instead. |
+| `ai-analysis-final-prompt:{date}` | `main_final.py` | The final-synthesis prompt string, stored on its own key. |
 
 `tokenUsage` (both result keys): `inputTokens`, `outputTokens`,
 `cacheCreationInputTokens`, `cacheReadInputTokens`, `thinkingTokens`, `totalCostUsd`.
@@ -183,7 +210,7 @@ bleeds into the next trading day.
 output — it does not mean the call was actually billed per-token; subscription usage
 counts against the plan instead (see `claude_cli._extract_usage`).
 
-## Two analyses, not overlapping
+## Three analyses, not overlapping
 
 Each analysis has exactly one job:
 
@@ -215,6 +242,20 @@ Tradeoff: `claude_cli.get_news_highlights` allows `WebSearch`/`WebFetch` (never
 Bash/Edit/Write) and runs several turns instead of 1, so it's noticeably slower than the
 tool-free signal-only path and has a different reliability profile. Run it manually a
 few times and compare output before putting it on any schedule.
+
+**Final synthesis (`prompt_final.py`, `main_final.py`).** Runs *after* both prior
+steps and depends on both: reads `topPicks`/`riskWatch` from `ai-analysis:{date}` and
+`newsHighlights` from `ai-analysis-news:{date}`, and reconciles them into one
+`favor`/`caution` `stance` per ticker plus an overall `summary`. No new data, no
+search — pure synthesis over what the other two steps already produced
+(`claude_cli.get_final_recommendations`, no tool access, same speed profile as the
+signal-only step). `stance` defaults to what the quant step already implied (`favor`
+for a `topPick`, `caution` for `riskWatch`) but the model can flip it if the news
+materially contradicts the quant signal — in testing this actually happened: a
+same-day NVDA SELL got flipped to `favor` after a fresh earnings beat + ~7.4% rally
+directly contradicted it, while a no-news ticker correctly stayed at its quant-implied
+`caution`. Chained automatically at the end of `worker.main_news`, not on its own
+schedule (see "Final-synthesis step" above).
 
 ## Sample prompts and output
 
@@ -377,6 +418,84 @@ got excluded rather than re-surfaced:
     "cacheReadInputTokens": 95289,
     "thinkingTokens": 1503,
     "totalCostUsd": 0.4631168
+  }
+}
+```
+
+### Final synthesis (`prompt_final.py` → `ai-analysis-final:{date}` / `ai-analysis-final-prompt:{date}`)
+
+Prompt sent to Claude, built entirely from that day's already-cached `ai-analysis:{date}`
+and `ai-analysis-news:{date}` — no sheet data, no search. Note CDE gets one merged line
+even though it was flagged as both a `topPick` and a `riskWatch` contradiction (rather
+than two lines repeating the same news):
+```
+Today is 2026-08-28. Two independent analyses of the same portfolio already ran:
+1) A data-driven analysis of algorithmic trading signals (quant reasoning below, already final).
+2) A news check on the tickers that analysis flagged (news findings below, where found).
+
+Your only job is to reconcile these two into one final stance per ticker below. Do not
+recompute the quant numbers, do not search for new information, and do not add tickers
+not listed below — use only what's provided.
+
+Quant portfolio note: The strategy is trailing buy-and-hold by roughly 10 percentage points (+24.9% vs +34.9%), driven largely by low-conviction HOLD signals (confidence mostly 24-37%) sitting out trending names like MU (+293.2% period, 83% win rate) and AMD (+104.5% period, 64% win rate). With only one active BUY and three SELLs, the model is currently in a defensive posture.
+
+Flagged tickers:
+- CDE: [topPick] The portfolio's only BUY signal, with an 8-day streak, the highest confidence in the book (47%) and strongest trend confirmation (ADX=43), though its -2.3% expectancy is a caution flag. [riskWatch] Contradiction: this is the sole BUY signal in the portfolio, but its historical expectancy is negative (-2.3%) with only a 50% win rate. | news: Coeur Mining shares rose about 3.45% on Aug 27 as coverage highlighted record Q2 revenue, EBITDA and free cash flow plus its first dividend in roughly three decades, though the same reports noted analysts trimming price targets. (source: StocksToTrade, 2026-08-27) — read: The strong cash-flow and dividend news with a continued price advance gives fundamental support to the portfolio's lone BUY call, somewhat tempering the concern that its negative -2.3% expectancy and 50% win rate make it unreliable, but the concurrent analyst price-target cuts keep that contradiction from being fully resolved.
+- NVDA: [riskWatch] Just flipped HOLD→SELL today after a strong +24.4% period return, with ADX=32 confirming trend strength but a 25% win rate and -1.8% expectancy backing the sell case. | news: Nvidia reported fiscal Q2 results on Aug 26 with revenue up ~106% year over year to $96.2 billion and issued surprising forward guidance (CFO citing ~70% revenue growth for fiscal 2028 and ~89% implied for the October quarter), sending the stock up roughly 7.4% on Aug 27. (source: The Motley Fool, 2026-08-27) — read: The blowout results, above-expectation guidance and a ~7.4% post-earnings rally run counter to the day-old HOLD-to-SELL flip, making the SELL signal less trustworthy even with ADX=32 showing trend strength, since the bearish 25% win rate and -1.8% expectancy now sit against a fresh fundamental catalyst pushing the other way.
+- RXT: [riskWatch] Longest-running SELL streak (11 days) with a 0% historical win rate and -48.7% expectancy, the worst risk metrics on the board, alongside a -39.6% period return. | news: no relevant recent news found
+
+Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
+{
+  "generatedAt": "2026-08-28",
+  "summary": "2-3 sentence final takeaway synthesizing both the quant picture and the news read",
+  "recommendations": [{"ticker": "TICK", "stance": "favor", "reason": "one sentence combining the quant signal and the news finding"}]
+}
+
+Rules:
+- Include every ticker listed above, exactly once each.
+- stance defaults to "favor" for a topPick and "caution" for a riskWatch ticker; if a
+  ticker is flagged as both (a contradiction), weigh both quant angles plus the news to
+  decide. Flip the default only when the news read materially changes the picture, and
+  say why in reason.
+- reason must reference both the quant angle and the news angle (or explicitly note no
+  news was found) — don't drop either source.
+- Do not invent data not present above.
+```
+
+Resulting `ai-analysis-final:{date}` — note NVDA flipped from its quant-implied `caution`
+(it was a `riskWatch` ticker) to `favor`, because the earnings beat + rally directly
+contradicted the fresh SELL signal, while RXT correctly stayed at `caution` since no
+news was found to counter its already-bearish quant picture:
+```json
+{
+  "generatedAt": "2026-08-28",
+  "summary": "The model is in a defensive crouch that has cost it roughly 10 points versus buy-and-hold, and the news flow argues against two of its three bearish-leaning calls. NVDA's blowout Q2 and guidance-driven rally directly undercut a one-day-old SELL flip, while CDE's record cash flow and reinstated dividend lend fundamental support to the book's lone BUY despite its negative backtested expectancy. RXT has no offsetting news and its metrics remain the worst on the board, so the SELL stands.",
+  "recommendations": [
+    {
+      "ticker": "CDE",
+      "stance": "favor",
+      "reason": "Quant keeps it as the only BUY with top confidence (47%) and strong trend (ADX=43) despite a -2.3% expectancy and 50% win rate, and the news of record Q2 revenue/EBITDA/FCF plus a first dividend in ~30 years and a continued price advance gives fundamental backing that outweighs the concurrent analyst target trims."
+    },
+    {
+      "ticker": "NVDA",
+      "stance": "favor",
+      "reason": "Flipping from the default caution because the day-old HOLD-to-SELL flip (25% win rate, -1.8% expectancy, though ADX=32) is materially contradicted by an Aug 26 blowout Q2 with ~106% revenue growth, well-above-expectation multi-year guidance, and a ~7.4% post-earnings rally, making the fresh SELL untrustworthy."
+    },
+    {
+      "ticker": "RXT",
+      "stance": "caution",
+      "reason": "Quant shows the worst risk profile on the board with an 11-day SELL streak, 0% historical win rate, -48.7% expectancy and a -39.6% period return, and no relevant recent news was found to offset it."
+    }
+  ],
+  "model": "claude (subscription CLI)",
+  "fetchedAt": "2026-08-28T09:40:29.724282+00:00",
+  "tokenUsage": {
+    "inputTokens": 2,
+    "outputTokens": 1237,
+    "cacheCreationInputTokens": 4463,
+    "cacheReadInputTokens": 0,
+    "thinkingTokens": 560,
+    "totalCostUsd": 0.032223
   }
 }
 ```

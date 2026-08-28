@@ -33,3 +33,11 @@ def news_cache_key(today: str) -> str:
 
 def news_prompt_cache_key(today: str) -> str:
     return f"ai-analysis-news-prompt:{today}"
+
+
+def final_cache_key(today: str) -> str:
+    return f"ai-analysis-final:{today}"
+
+
+def final_prompt_cache_key(today: str) -> str:
+    return f"ai-analysis-final-prompt:{today}"

@@ -11,6 +11,11 @@ not an independent analysis. Unlike main.py, there's no cache-skip: every
 invocation regenerates and overwrites ai-analysis-news:{date}, so this can be
 run — and scheduled — more than once a day for fresher news. Run manually:
     python -m worker.main_news
+
+At the end of a successful run, this calls main_final.main() directly —
+final synthesis (see main_final.py) only makes sense immediately after a
+fresh news check, so it's chained here rather than given its own schedule;
+whatever cadence this runs at, the final recommendation refreshes with it.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_news_highlights
 from .logging_setup import get_logger
 from .main import fetch_sheet_csv
+from .main_final import main as run_final_synthesis
 from .prompt_news import NewsCandidate, build_news_only_prompt
 
 load_dotenv()
@@ -145,7 +151,9 @@ def main() -> int:
             log.warning("Failed to write news prompt to Redis", exc_info=True)
 
     log.info("Run finished in %.1fs", time.monotonic() - start)
-    return 0
+
+    log.info("Chaining into final synthesis (worker.main_final)")
+    return run_final_synthesis()
 
 
 if __name__ == "__main__":
