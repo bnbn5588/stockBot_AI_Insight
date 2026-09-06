@@ -77,7 +77,13 @@ def main() -> int:
     if not all_data:
         log.error("No data parsed from sheet")
         return 1
-    log.info("Parsed %d tickers from sheet", len(all_data))
+
+    total_tickers = len(all_data)
+    all_data = A.filter_active_tickers(all_data)
+    log.info(
+        "Parsed %d tickers from sheet, %d active on latest date (%s)",
+        total_tickers, len(all_data), A.latest_data_date(all_data),
+    )
 
     try:
         result, prompt = generate_analysis(all_data, today)

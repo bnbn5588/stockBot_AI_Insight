@@ -14,7 +14,8 @@ template and JSON response contract.
 ```
 worker/
   analytics.py      CSV parsing, streaks, trade stats, forward returns, portfolio
-                     simulation.
+                     simulation, and filter_active_tickers (drops tickers no longer
+                     appearing on the sheet's latest date — see "Ticker universe").
   prompt.py          Builds the signal-only prompt. _build_data_sections() is shared
                      with prompt_news.py.
   prompt_news.py     News-only prompt — does NOT re-derive marketSummary/topPicks/
@@ -69,6 +70,26 @@ Then `cp .env.example .env` and fill in:
   day — a wide window just re-returns the same older headlines on every run.
 
 From here, pick one of the two paths below.
+
+## Ticker universe
+
+There's no ticker whitelist or config anywhere in this project — the full set of
+tickers considered each run is whatever `parse_csv` finds in the sheet, full stop. To
+add or remove a ticker from the whole pipeline, edit what the bot logs into the sheet,
+not any file here.
+
+That alone isn't quite right, though: `parse_csv` accumulates *every* ticker that's
+ever appeared in the sheet's history, so a ticker removed from tracking months ago
+still has old rows sitting there and would otherwise show up forever.
+`analytics.filter_active_tickers` fixes that — after parsing, both `main.py` and
+`main_news.py` drop any ticker whose most recent row isn't on the sheet's overall
+latest date, keeping only what's actually still being tracked. One consequence worth
+knowing: this checks for an *exact* date match, so a ticker that's still meant to be
+tracked but missed one day's row (a transient gap, not a real removal) would also drop
+out of that day's analysis until it gets a fresh row again — this hasn't been an issue
+in testing (a real removal drops a ticker's last row multiple days behind, not by one),
+but if your bot does have occasional per-ticker gaps, a "within the last N days"
+tolerance instead of an exact match would be the fix.
 
 ### Native (Python installed directly on the host)
 

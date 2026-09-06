@@ -105,6 +105,7 @@ def main() -> int:
     if not all_data:
         log.error("No data parsed from sheet")
         return 1
+    all_data = A.filter_active_tickers(all_data)
 
     candidates = _collect_candidates(analysis, all_data)
     log.info("Collected %d news candidates: %s", len(candidates), [c["ticker"] for c in candidates])

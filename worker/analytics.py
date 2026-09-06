@@ -82,6 +82,27 @@ def parse_csv(csv_text: str) -> AllData:
     return data
 
 
+def latest_data_date(all_data: AllData) -> str:
+    """Most recent date present across any ticker's rows."""
+    latest = ""
+    for rows in all_data.values():
+        if rows and rows[-1].date > latest:
+            latest = rows[-1].date
+    return latest
+
+
+def filter_active_tickers(all_data: AllData) -> AllData:
+    """Keep only tickers whose most recent row falls on the sheet's overall
+    latest date. A ticker removed from the bot's tracking keeps its old rows
+    in the sheet forever — parse_csv has no way to tell "still tracked" from
+    "tracked once, years ago" apart, since it just accumulates every ticker
+    that's ever appeared. This is the filter that actually distinguishes
+    them: once a ticker stops getting new rows, its last row falls behind
+    the current date and it drops out here."""
+    latest = latest_data_date(all_data)
+    return {ticker: rows for ticker, rows in all_data.items() if rows and rows[-1].date == latest}
+
+
 # ── Streak ───────────────────────────────────────────────────────────────────
 
 def current_streak(rows: List[Row]) -> Dict[str, object]:
