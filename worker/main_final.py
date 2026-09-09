@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_final_recommendations
 from .logging_setup import get_logger
-from .prompt_final import build_final_prompt
+from .prompt_final import build_final_prompt, candidate_tickers
 
 load_dotenv()
 
@@ -66,12 +66,17 @@ def main() -> int:
         return 1
     news = json.loads(news_raw)
 
-    prompt = build_final_prompt(analysis, news, today)
-    try:
-        final, usage = get_final_recommendations(prompt)
-    except ClaudeCLIError:
-        log.error("Claude CLI error", exc_info=True)
-        return 1
+    tickers = candidate_tickers(analysis)
+    if not tickers:
+        log.info("No topPicks/riskWatch tickers to synthesize for today.")
+        final, usage, prompt = {"generatedAt": today, "summary": "", "recommendations": []}, {}, None
+    else:
+        prompt = build_final_prompt(analysis, news, today)
+        try:
+            final, usage = get_final_recommendations(prompt, candidate_count=len(tickers))
+        except ClaudeCLIError:
+            log.error("Claude CLI error", exc_info=True)
+            return 1
 
     result = {
         **final,
@@ -95,12 +100,13 @@ def main() -> int:
         log.error("Failed to write to Redis", exc_info=True)
         return 1
 
-    prompt_key = R.final_prompt_cache_key(today)
-    try:
-        redis_conn.set(prompt_key, prompt, ex=R.CACHE_TTL_SECONDS)
-        log.info("Wrote final prompt for %s to Redis key '%s'.", today, prompt_key)
-    except Exception:
-        log.warning("Failed to write final prompt to Redis", exc_info=True)
+    if prompt is not None:
+        prompt_key = R.final_prompt_cache_key(today)
+        try:
+            redis_conn.set(prompt_key, prompt, ex=R.CACHE_TTL_SECONDS)
+            log.info("Wrote final prompt for %s to Redis key '%s'.", today, prompt_key)
+        except Exception:
+            log.warning("Failed to write final prompt to Redis", exc_info=True)
 
     log.info("Run finished in %.1fs", time.monotonic() - start)
     return 0

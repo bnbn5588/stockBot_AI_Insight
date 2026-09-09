@@ -153,6 +153,16 @@ def main() -> int:
 
     log.info("Run finished in %.1fs", time.monotonic() - start)
 
+    # A short pause before chaining, not just for show: in production this
+    # step and main_final's very first claude call have been observed
+    # running back-to-back with ~1ms gap, sharing the same ~/.claude session
+    # directory, on the one occasion main_final came back with placeholder
+    # output instead of a real response. Unconfirmed as the actual cause,
+    # but cheap enough to rule out.
+    chain_delay = float(os.environ.get("FINAL_SYNTHESIS_DELAY_SECONDS", "5"))
+    if chain_delay > 0:
+        time.sleep(chain_delay)
+
     log.info("Chaining into final synthesis (worker.main_final)")
     return run_final_synthesis()
 

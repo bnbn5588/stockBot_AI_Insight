@@ -86,15 +86,25 @@ _FINAL_RECOMMENDATION_ITEM_SCHEMA = {
     "required": ["ticker", "stance", "reason"],
 }
 
-FINAL_JSON_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "generatedAt": {"type": "string"},
-        "summary": {"type": "string"},
-        "recommendations": {"type": "array", "items": _FINAL_RECOMMENDATION_ITEM_SCHEMA},
-    },
-    "required": ["generatedAt", "summary", "recommendations"],
-}
+def _final_json_schema(candidate_count: int) -> Dict[str, Any]:
+    """recommendations is constrained to exactly candidate_count items —
+    without minItems/maxItems, a response covering only one of several
+    flagged tickers is still schema-valid, which is exactly the shape both
+    observed stub failures took (one lone item instead of the full set)."""
+    return {
+        "type": "object",
+        "properties": {
+            "generatedAt": {"type": "string"},
+            "summary": {"type": "string"},
+            "recommendations": {
+                "type": "array",
+                "items": _FINAL_RECOMMENDATION_ITEM_SCHEMA,
+                "minItems": candidate_count,
+                "maxItems": candidate_count,
+            },
+        },
+        "required": ["generatedAt", "summary", "recommendations"],
+    }
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -275,9 +285,14 @@ def get_news_highlights(prompt: str, timeout_seconds: int = NEWS_TIMEOUT_SECONDS
     )
 
 
-def get_final_recommendations(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def get_final_recommendations(
+    prompt: str, candidate_count: int, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Runs prompt through `claude -p` (headless, no tool access, schema-
     constrained output) and returns (final recommendations dict, token usage
     dict). Pure synthesis over the already-computed signal-only and news-only
-    results — no search needed, so this stays fast like get_analysis."""
-    return _run_cli(prompt, FINAL_JSON_SCHEMA, tools="", timeout_seconds=timeout_seconds)
+    results — no search needed, so this stays fast like get_analysis.
+    candidate_count must match prompt_final.candidate_tickers(analysis) —
+    it forces the recommendations array to exactly that length (see
+    _final_json_schema)."""
+    return _run_cli(prompt, _final_json_schema(candidate_count), tools="", timeout_seconds=timeout_seconds)

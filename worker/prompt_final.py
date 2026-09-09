@@ -18,17 +18,29 @@ def _news_line(ticker: str, news_by_ticker: Dict[str, dict]) -> str:
     return f"news: {nh['summary']} (source: {nh['source']}, {nh['publishedDate']}) — read: {nh['recommendation']}"
 
 
-def build_final_prompt(analysis: dict, news: dict, today: str) -> str:
-    news_by_ticker: Dict[str, dict] = {h["ticker"]: h for h in news.get("newsHighlights", [])}
-
+def _quant_by_ticker(analysis: dict) -> Dict[str, List[str]]:
     # A ticker can appear in both topPicks and riskWatch (a contradiction flag
-    # cuts both ways) — merge into one line per ticker instead of two
+    # cuts both ways) — merge into one entry per ticker instead of two
     # redundant blocks with the same news line repeated.
     quant_by_ticker: Dict[str, List[str]] = {}
     for item in analysis.get("topPicks", []):
         quant_by_ticker.setdefault(item["ticker"], []).append(f"[topPick] {item['reason']}")
     for item in analysis.get("riskWatch", []):
         quant_by_ticker.setdefault(item["ticker"], []).append(f"[riskWatch] {item['reason']}")
+    return quant_by_ticker
+
+
+def candidate_tickers(analysis: dict) -> List[str]:
+    """The deduped ticker list build_final_prompt will include, in the same
+    order. main_final.py uses this to size the response schema's exact
+    array length (claude_cli.get_final_recommendations' candidate_count) —
+    keeping the two in sync here means they can't drift apart."""
+    return list(_quant_by_ticker(analysis).keys())
+
+
+def build_final_prompt(analysis: dict, news: dict, today: str) -> str:
+    news_by_ticker: Dict[str, dict] = {h["ticker"]: h for h in news.get("newsHighlights", [])}
+    quant_by_ticker = _quant_by_ticker(analysis)
 
     lines: List[str] = [
         f"- {ticker}: {' '.join(reasons)} | {_news_line(ticker, news_by_ticker)}"

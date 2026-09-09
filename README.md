@@ -559,22 +559,45 @@ if the CLI version changes.
 6. **Lazy placeholder output isn't always caught by point 3's env stripping.** Point 3
    explains the known cause (nested inside an active Claude Code session), but the same
    symptom — schema-valid JSON with every prose field literally the word `"test"`
-   instead of real content, `thinkingTokens: 0` — has shown up in at least one Docker/cron
-   deployment where that specific env-leak shouldn't apply, so treat it as a possible
-   failure mode regardless of environment, not something env-stripping alone rules out.
-   `_looks_like_lazy_stub()` checks the actual content (only in prose fields — `summary`,
-   `reason`, `marketSummary`, `portfolioNote` — never `ticker`/`stance`/dates, so a ticker
-   that happened to be named "TEST" can't false-positive) and `_run_cli()` retries once
-   automatically before raising `ClaudeCLIError` if it keeps happening.
+   instead of real content — has shown up in at least one Docker/cron deployment where
+   that specific env-leak shouldn't apply, so treat it as a possible failure mode
+   regardless of environment, not something env-stripping alone rules out.
+   `thinkingTokens: 0` turned out **not** to be a reliable signal of this — genuine,
+   fully-reasoned responses have shown up with zero thinking tokens too, so don't use it
+   as a diagnostic. `_looks_like_lazy_stub()` instead checks the actual content (only in
+   prose fields — `summary`, `reason`, `marketSummary`, `portfolioNote` — never
+   `ticker`/`stance`/dates, so a ticker that happened to be named "TEST" can't
+   false-positive) and `_run_cli()` retries once automatically before raising
+   `ClaudeCLIError` if it keeps happening.
+7. **Neither array field had a length constraint, so an incomplete response was still
+   schema-valid.** Both observed lazy-stub failures returned exactly one item in an
+   array that was supposed to cover every flagged ticker (e.g. one `recommendations`
+   entry when 3 tickers were flagged) — without `minItems`/`maxItems`, that's a
+   perfectly valid `structured_output`, so point 6's content check was the only thing
+   catching it. `get_final_recommendations` now takes a `candidate_count` argument and
+   builds its schema with `minItems == maxItems == candidate_count`
+   (`_final_json_schema()`), making an incomplete response structurally impossible to
+   pass validation, on top of the content-based retry. `candidate_count` must match
+   `prompt_final.candidate_tickers(analysis)` — `main_final.py` computes both from the
+   same function so they can't drift apart.
+8. **`main_news.py` pauses `FINAL_SYNTHESIS_DELAY_SECONDS` (default 5) before chaining
+   into `main_final`.** The one production occurrence of the lazy-stub failure had
+   `main_news`'s last claude call finish and `main_final`'s first claude call start
+   about 1ms apart, sharing the same mounted `~/.claude` session directory — every prior
+   *successful* test of this chain had some natural gap between calls. Unconfirmed as
+   the actual cause, but cheap enough to add as a precaution regardless.
 
 ## Known gaps / follow-ups
 
-- **Root cause of the lazy-stub output (see `claude_cli.py` point 6) isn't actually
-  understood for the Docker/cron deployment case** — only the known cause (nested
-  Claude Code session) and a content-based detection + retry exist. If both attempts
-  in `_run_cli()` come back stubbed, the step fails loudly (`ClaudeCLIError`) rather
-  than writing garbage to Redis, but repeated failures mean something in that specific
-  environment needs actual investigation, not just retried around.
+- **Root cause of the lazy-stub output on the Docker/cron deployment still isn't
+  confirmed** (see `claude_cli.py` points 6–8) — one occurrence so far, with the
+  chained-call timing (main_news → main_final ~1ms apart) as the leading but unproven
+  theory. What's in place: content-based detection + one retry (point 6), an exact
+  array-length schema constraint so an incomplete response can't pass validation at all
+  (point 7), and a deliberate delay before chaining (point 8). If both retry attempts
+  still come back stubbed despite all of that, the step fails loudly (`ClaudeCLIError`)
+  rather than writing garbage to Redis — but a repeat means the timing theory was wrong
+  and the actual cause still needs finding.
 - News-only step isn't wired into any schedule; it's a manual/independently-scheduled
   tool for now (`python -m worker.main_news`, run after `worker.main` has cached
   today's analysis).
