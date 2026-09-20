@@ -13,6 +13,13 @@ overwrites ai-analysis-final:{date}. main_news.py has no cache-skip
 specifically so it can be run several times a day for fresher news — if this
 step still skipped once a day, chaining it after main_news.py would mean the
 final recommendation never actually reflected any of those later refreshes.
+
+If LINE_CHANNEL_ACCESS_TOKEN is set, also broadcasts the result to every
+follower of a LINE Official Account (see line_broadcast.py) — skipped
+entirely if the token isn't configured, and a broadcast failure doesn't fail
+this run. Note this means every regeneration broadcasts again: if
+main_news.py (and therefore this step) is ever scheduled more than once a
+day, followers get a fresh broadcast each time too.
 """
 from __future__ import annotations
 
@@ -25,6 +32,7 @@ from dotenv import load_dotenv
 
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_final_recommendations
+from .line_broadcast import LineBroadcastError, broadcast
 from .logging_setup import get_logger
 from .prompt_final import build_final_prompt, candidate_tickers
 
@@ -107,6 +115,16 @@ def main() -> int:
             log.info("Wrote final prompt for %s to Redis key '%s'.", today, prompt_key)
         except Exception:
             log.warning("Failed to write final prompt to Redis", exc_info=True)
+
+    # Broadcast is opt-in (skipped entirely if no token is configured) and
+    # non-fatal — the analysis itself is already safely written to Redis by
+    # this point, so a LINE-side failure shouldn't fail the whole run.
+    if result.get("recommendations") and os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"):
+        try:
+            broadcast(result)
+            log.info("Broadcast final recommendations for %s to LINE OA.", today)
+        except LineBroadcastError:
+            log.error("LINE broadcast failed", exc_info=True)
 
     log.info("Run finished in %.1fs", time.monotonic() - start)
     return 0

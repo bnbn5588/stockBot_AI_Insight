@@ -40,7 +40,14 @@ worker/
                      and ai-analysis-news:{date}, writes recommendations to
                      ai-analysis-final:{date} and the prompt to
                      ai-analysis-final-prompt:{date}. Not scheduled on its own —
-                     invoked by main_news.py; can still be run standalone.
+                     invoked by main_news.py; can still be run standalone. Also
+                     broadcasts the result to LINE if LINE_CHANNEL_ACCESS_TOKEN
+                     is set (line_broadcast.py).
+  line_broadcast.py  Builds a LINE Flex Message (one card per ticker) from the
+                     final recommendation and POSTs it to the Messaging API's
+                     Broadcast endpoint — every follower of the configured LINE
+                     Official Account gets it. Opt-in: skipped entirely if
+                     LINE_CHANNEL_ACCESS_TOKEN isn't set.
 requirements.txt
 .env.example
 run.sh               Native-path cron wrapper: loads .env, runs `python3 -m worker.main`.
@@ -68,6 +75,11 @@ Then `cp .env.example .env` and fill in:
 - `NEWS_LOOKBACK_DAYS` — `worker.main_news` only, default `2`. How far back its web
   search looks for news. Keep it short if you're running that step several times a
   day — a wide window just re-returns the same older headlines on every run.
+- `FINAL_SYNTHESIS_DELAY_SECONDS` — `worker.main_news` only, default `5`. Pause before
+  chaining into `worker.main_final` — see `claude_cli.py`'s non-obvious-behavior list.
+- `LINE_CHANNEL_ACCESS_TOKEN` — optional. Set this to broadcast the final
+  recommendation to a LINE Official Account — see "LINE broadcast" below. Leave unset
+  to skip broadcasting entirely.
 
 From here, pick one of the two paths below.
 
@@ -189,6 +201,43 @@ cache-skip, same as `worker.main_news` — every invocation regenerates and over
 ```
 python -m worker.main_final
 ```
+
+## LINE broadcast
+
+If `LINE_CHANNEL_ACCESS_TOKEN` is set, `worker.main_final` broadcasts the final
+recommendation to **every follower** of a LINE Official Account — there's no
+per-follower targeting, this is a true broadcast (LINE's Messaging API [Broadcast
+Message](https://developers.line.biz/en/reference/messaging-api/#send-broadcast-message)
+endpoint) — right after successfully writing to Redis. It's opt-in: leave the token
+unset and `main_final.py` never even imports `requests` for it, let alone sends
+anything. A broadcast failure is logged but doesn't fail the run — the analysis itself
+is already safely in Redis by that point.
+
+Setup, on your end (not something this project can do for you): create a **Messaging
+API** channel for your LINE Official Account in the [LINE Developers
+Console](https://developers.line.biz/console/) (not a LINE Login channel — those
+tokens don't work here), issue a channel access token from it, and put that token in
+`.env` as `LINE_CHANNEL_ACCESS_TOKEN`.
+
+`line_broadcast.build_flex_message()` builds a [Flex
+Message](https://developers.line.biz/en/docs/messaging-api/flex-message-elements/) —
+a carousel of cards, one summary card (today's date + the overall `summary`) followed
+by one card per ticker (`ticker` + `stance` as a colored header — green for `favor`,
+orange for `caution` — `reason` as the body text, truncated to 300 characters so a
+card stays readable on a phone without scrolling). It's a pure function with no
+network access, so it's testable without a real token or triggering a real send —
+`worker.line_broadcast.broadcast()` is the one function that actually calls the API.
+
+Two things worth being deliberate about:
+- **A real broadcast is irreversible and visible to every current follower the moment
+  it fires** — there's no sandbox/test mode distinct from production sending. Test
+  `build_flex_message()`'s output structure freely; be intentional about when you
+  first let `broadcast()` actually run.
+- **Broadcasts count against your channel's monthly message quota**, and every
+  regeneration of `ai-analysis-final:{date}` sends another one. Fine at once a day;
+  if `worker.main_news` (and therefore this chained step) is ever scheduled more than
+  once a day, your followers get a fresh broadcast each time too — worth checking
+  your plan's quota before increasing that frequency.
 
 ## Logging
 
