@@ -34,6 +34,10 @@ import subprocess
 import tempfile
 from typing import Any, Dict, Optional, Tuple
 
+from .logging_setup import get_logger
+
+log = get_logger("claude_cli")
+
 DEFAULT_TIMEOUT_SECONDS = 300
 NEWS_TIMEOUT_SECONDS = 480  # web search adds turns/latency
 
@@ -214,7 +218,14 @@ def _run_cli_once(
             raise ClaudeCLIError(f"claude CLI timed out after {timeout_seconds}s") from exc
 
     if proc.returncode != 0:
-        raise ClaudeCLIError(f"claude CLI exited {proc.returncode}: {proc.stderr.strip()}")
+        # stderr has been empty on every production failure seen so far —
+        # capture stdout too, in case the real explanation is landing there
+        # instead (some CLI failure paths print to stdout, not stderr).
+        raise ClaudeCLIError(
+            f"claude CLI exited {proc.returncode}\n"
+            f"stderr: {proc.stderr.strip() or '(empty)'}\n"
+            f"stdout: {proc.stdout.strip() or '(empty)'}"
+        )
 
     stdout = proc.stdout.strip()
     if not stdout:
@@ -254,14 +265,24 @@ def _run_cli(
     bypass_permissions: bool = False,
     max_attempts: int = 2,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    last_stub: Tuple[Dict[str, Any], Dict[str, Any]] = ({}, {})
+    last_stub: Optional[Tuple[Dict[str, Any], Dict[str, Any]]] = None
+    last_error: Optional[ClaudeCLIError] = None
+
     for attempt in range(1, max_attempts + 1):
-        result, usage = _run_cli_once(prompt, schema, tools, timeout_seconds, bypass_permissions)
+        try:
+            result, usage = _run_cli_once(prompt, schema, tools, timeout_seconds, bypass_permissions)
+        except ClaudeCLIError as exc:
+            last_error, last_stub = exc, None
+            log.warning("claude CLI call failed on attempt %d/%d: %s", attempt, max_attempts, exc)
+            continue
+
         if not _looks_like_lazy_stub(result):
             return result, usage
-        last_stub = (result, usage)
-        if attempt < max_attempts:
-            continue
+        last_error, last_stub = None, (result, usage)
+        log.warning("claude CLI returned placeholder/stub output on attempt %d/%d", attempt, max_attempts)
+
+    if last_error is not None:
+        raise last_error
     raise ClaudeCLIError(
         f"claude CLI returned placeholder/stub output ({max_attempts} attempt(s)) "
         f"instead of a real response: {json.dumps(last_stub[0])}"
