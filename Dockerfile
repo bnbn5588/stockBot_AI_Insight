@@ -4,10 +4,22 @@ FROM python:3.12-slim
 # pure Python. This keeps the host's Python/pip completely untouched; the
 # only thing installed on the host is Docker (and Node, separately, just for
 # the one-time `claude` login — see README "Docker deployment").
+#
+# The CLI version is pinned deliberately — an earlier unpinned `npm install
+# -g @anthropic-ai/claude-code` silently froze at whatever version was
+# current the first time this layer built, since Docker's build cache reuses
+# a layer whenever the instruction text is unchanged, regardless of how many
+# times the image gets rebuilt for unrelated code changes afterward. That let
+# production run an untested CLI version (2.1.197) for weeks while every
+# behavior in claude_cli.py's docstring and the README's "non-obvious CLI
+# behavior" section was verified against 2.1.241 — a real, confirmed
+# contributor to at least one class of production failure. Bump this pin
+# deliberately, and re-verify those documented behaviors still hold, rather
+# than letting it drift silently again.
 RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code@2.1.241 \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
