@@ -239,6 +239,17 @@ Two things worth being deliberate about:
   once a day, your followers get a fresh broadcast each time too — worth checking
   your plan's quota before increasing that frequency.
 
+**Failure alerts.** Same opt-in token, same every-follower broadcast, but a different
+message shape: `line_broadcast.notify_failure()` sends a plain text message (not a Flex
+Message) when `main.py`, `main_news.py`, or `main_final.py` is about to return non-zero
+— a Claude CLI error (including an expired/unrefreshable OAuth session), a missing
+upstream cache key (e.g. `main_news`/`main_final` running before their dependency
+finished), or a Redis write failure. This exists because these scripts are meant to run
+unattended from cron — without it, a failed run only shows up in `log/worker.log`,
+which nobody is watching live. Like `broadcast()`, it's a no-op if
+`LINE_CHANNEL_ACCESS_TOKEN` isn't set, and a failure sending the alert itself is only
+logged, never raised, so it can't mask the original error.
+
 ## Logging
 
 Every run logs to `log/worker.log` (relative to the project root) *and* stdout, so

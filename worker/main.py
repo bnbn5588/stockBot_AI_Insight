@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from . import analytics as A
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_analysis
+from .line_broadcast import notify_failure
 from .logging_setup import get_logger
 from .prompt import build_prompt
 
@@ -58,6 +59,7 @@ def main() -> int:
     sheet_id = os.environ.get("SHEET_ID")
     if not sheet_id:
         log.error("SHEET_ID environment variable is not set")
+        notify_failure("worker.main", "SHEET_ID environment variable is not set")
         return 1
 
     today = now.strftime("%Y-%m-%d")
@@ -76,6 +78,7 @@ def main() -> int:
     all_data = A.parse_csv(csv_text)
     if not all_data:
         log.error("No data parsed from sheet")
+        notify_failure("worker.main", "No data parsed from Google Sheet")
         return 1
 
     total_tickers = len(all_data)
@@ -87,8 +90,9 @@ def main() -> int:
 
     try:
         result, prompt = generate_analysis(all_data, today)
-    except ClaudeCLIError:
+    except ClaudeCLIError as exc:
         log.error("Claude CLI error", exc_info=True)
+        notify_failure("worker.main", f"Claude CLI error: {exc}")
         return 1
 
     usage = result.get("tokenUsage", {})
@@ -108,6 +112,7 @@ def main() -> int:
             log.info("Wrote analysis for %s to Redis key '%s'.", today, key)
         except Exception:
             log.error("Failed to write to Redis", exc_info=True)
+            notify_failure("worker.main", "Failed to write analysis to Redis")
             return 1
 
         prompt_key = R.prompt_cache_key(today)

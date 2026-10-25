@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from . import analytics as A
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_news_highlights
+from .line_broadcast import notify_failure
 from .logging_setup import get_logger
 from .main import fetch_sheet_csv
 from .main_final import main as run_final_synthesis
@@ -77,12 +78,14 @@ def main() -> int:
     sheet_id = os.environ.get("SHEET_ID")
     if not sheet_id:
         log.error("SHEET_ID environment variable is not set")
+        notify_failure("worker.main_news", "SHEET_ID environment variable is not set")
         return 1
 
     today = now.strftime("%Y-%m-%d")
     redis_conn = R.get_client()
     if redis_conn is None:
         log.error("REDIS_URL is not set — this step needs Redis to read today's analysis")
+        notify_failure("worker.main_news", "REDIS_URL is not set")
         return 1
 
     news_key = R.news_cache_key(today)
@@ -97,6 +100,11 @@ def main() -> int:
             "this step depends on its topPicks/riskWatch output.",
             R.cache_key(today),
         )
+        notify_failure(
+            "worker.main_news",
+            f"No cached analysis at '{R.cache_key(today)}' — worker.main must run "
+            "successfully for today before this step can.",
+        )
         return 1
     analysis = json.loads(analysis_raw)
 
@@ -104,6 +112,7 @@ def main() -> int:
     all_data = A.parse_csv(csv_text)
     if not all_data:
         log.error("No data parsed from sheet")
+        notify_failure("worker.main_news", "No data parsed from Google Sheet")
         return 1
     all_data = A.filter_active_tickers(all_data)
 
@@ -118,8 +127,9 @@ def main() -> int:
         prompt = build_news_only_prompt(candidates, today, lookback_days=lookback_days)
         try:
             news, usage = get_news_highlights(prompt)
-        except ClaudeCLIError:
+        except ClaudeCLIError as exc:
             log.error("Claude CLI error", exc_info=True)
+            notify_failure("worker.main_news", f"Claude CLI error: {exc}")
             return 1
         result = {
             **news,
@@ -141,6 +151,7 @@ def main() -> int:
         log.info("Wrote news highlights for %s to Redis key '%s'.", today, news_key)
     except Exception:
         log.error("Failed to write to Redis", exc_info=True)
+        notify_failure("worker.main_news", "Failed to write news highlights to Redis")
         return 1
 
     if prompt is not None:

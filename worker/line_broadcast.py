@@ -31,6 +31,7 @@ BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast"
 _MAX_ALT_TEXT_CHARS = 400
 _MAX_REASON_CHARS = 300  # keeps a ticker card readable without scrolling on a phone
 _MAX_SUMMARY_CHARS = 320  # summary card is "mega"-sized, a bit more room than a ticker card
+_MAX_TEXT_MESSAGE_CHARS = 5000  # LINE's hard limit for a plain text message
 
 _STANCE_COLORS = {"favor": "#1DB446", "caution": "#E67E22"}
 _SUMMARY_HEADER_COLOR = "#2C3E50"
@@ -159,3 +160,45 @@ def broadcast(result: Dict[str, Any]) -> None:
 
     if res.status_code != 200:
         raise LineBroadcastError(f"LINE broadcast failed ({res.status_code}): {res.text}")
+
+
+def send_text_message(text: str) -> None:
+    """POSTs a plain-text broadcast message to LINE's Broadcast endpoint —
+    used for operational alerts (e.g. a failed run) rather than the Flex
+    Message carousel build_flex_message()/broadcast() build for the final
+    recommendation. Raises LineBroadcastError on any failure, same as
+    broadcast()."""
+    token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+    if not token:
+        raise LineBroadcastError("LINE_CHANNEL_ACCESS_TOKEN environment variable is not set")
+
+    try:
+        res = requests.post(
+            BROADCAST_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"messages": [{"type": "text", "text": _truncate(text, _MAX_TEXT_MESSAGE_CHARS)}]},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise LineBroadcastError(f"LINE broadcast request failed: {exc}") from exc
+
+    if res.status_code != 200:
+        raise LineBroadcastError(f"LINE broadcast failed ({res.status_code}): {res.text}")
+
+
+def notify_failure(job: str, reason: str) -> None:
+    """Best-effort failure alert to the LINE OA for a worker run that's about
+    to return non-zero. Opt-in like broadcast() — a no-op if
+    LINE_CHANNEL_ACCESS_TOKEN isn't set, since a missing token is this
+    project's documented way to disable LINE entirely — and swallows
+    LineBroadcastError itself (just logs it) so a notification failure never
+    masks or replaces the original error that triggered it."""
+    if not os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"):
+        return
+    try:
+        send_text_message(f"[stockBot] {job} failed: {reason}")
+    except LineBroadcastError:
+        log.error("Failed to send LINE failure notification", exc_info=True)

@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, get_final_recommendations
-from .line_broadcast import LineBroadcastError, broadcast
+from .line_broadcast import LineBroadcastError, broadcast, notify_failure
 from .logging_setup import get_logger
 from .prompt_final import build_final_prompt, candidate_tickers
 
@@ -50,6 +50,7 @@ def main() -> int:
     redis_conn = R.get_client()
     if redis_conn is None:
         log.error("REDIS_URL is not set — this step needs Redis to read today's analyses")
+        notify_failure("worker.main_final", "REDIS_URL is not set")
         return 1
 
     final_key = R.final_cache_key(today)
@@ -62,6 +63,11 @@ def main() -> int:
             "No cached analysis at '%s' — run `python -m worker.main` for today first.",
             R.cache_key(today),
         )
+        notify_failure(
+            "worker.main_final",
+            f"No cached analysis at '{R.cache_key(today)}' — worker.main must run "
+            "successfully for today before this step can.",
+        )
         return 1
     analysis = json.loads(analysis_raw)
 
@@ -70,6 +76,11 @@ def main() -> int:
         log.error(
             "No cached news at '%s' — run `python -m worker.main_news` for today first.",
             R.news_cache_key(today),
+        )
+        notify_failure(
+            "worker.main_final",
+            f"No cached news at '{R.news_cache_key(today)}' — worker.main_news must run "
+            "successfully for today before this step can.",
         )
         return 1
     news = json.loads(news_raw)
@@ -82,8 +93,9 @@ def main() -> int:
         prompt = build_final_prompt(analysis, news, today)
         try:
             final, usage = get_final_recommendations(prompt, candidate_count=len(tickers))
-        except ClaudeCLIError:
+        except ClaudeCLIError as exc:
             log.error("Claude CLI error", exc_info=True)
+            notify_failure("worker.main_final", f"Claude CLI error: {exc}")
             return 1
 
     result = {
@@ -106,6 +118,7 @@ def main() -> int:
         log.info("Wrote final recommendations for %s to Redis key '%s'.", today, final_key)
     except Exception:
         log.error("Failed to write to Redis", exc_info=True)
+        notify_failure("worker.main_final", "Failed to write final recommendations to Redis")
         return 1
 
     if prompt is not None:
