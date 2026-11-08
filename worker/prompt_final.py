@@ -82,4 +82,6 @@ Rules:
   say why in reason.
 - reason must reference both the quant angle and the news angle (or explicitly note no
   news was found) — don't drop either source.
+- Describe trend and risk, not certainty: no "will rise", "guaranteed", or price targets. These signals
+  help manage risk; they are not forecasts of which stocks will beat the market.
 - Do not invent data not present above."""

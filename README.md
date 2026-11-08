@@ -342,6 +342,12 @@ schedule (see "Final-synthesis step" above).
 
 ## Sample prompts and output
 
+> **These samples predate the v2 engine prompt (2026-11-08).** The data sections now also
+> explain how the signals work, show `agree%` instead of `confidence%`, add `regime`/`+DI`/`-DI`,
+> and replace win rate/expectancy with "too few to judge" below 5 completed trades; the rules
+> ask for trend/risk language instead of conviction. Current template and line format:
+> [ai-analysis-prompt-logic.md](ai-analysis-prompt-logic.md). The JSON shapes are unchanged.
+
 Real captures from a live run against the actual sheet — not hand-written examples.
 
 ### Signal-only (`prompt.py` → `ai-analysis:{date}`)

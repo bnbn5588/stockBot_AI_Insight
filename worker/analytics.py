@@ -23,6 +23,11 @@ class Row:
     strength: str
     confidence: float
     adx: float
+    # v2 extra columns (I-L); empty/None on rows that predate them
+    regime: str = ""
+    rsi: Optional[float] = None
+    plus_di: Optional[float] = None
+    minus_di: Optional[float] = None
 
 
 AllData = Dict[str, List[Row]]
@@ -30,11 +35,13 @@ AllData = Dict[str, List[Row]]
 
 # ── CSV parsing ──────────────────────────────────────────────────────────────
 #
-# Sheet format (7 columns, no header row):
-#   "2025-10-19 8:00:07","AAPL","BUY","Weak","47.4","Strong (ADX: 60.63)","$252.29"
+# Sheet format (no header row). Columns A-G are fixed:
+#   "2026-11-06","AAPL","BUY","Moderate","60","Weak (ADX: 17.32)","$342.37",
+# followed by optional v2 columns H-N:
+#   engine, regime (UP/DOWN vs SMA200), RSI, +DI, -DI, SMA200, generated_at
 #
-# The bot runs daily so the same trading-day row appears multiple times;
-# keep only the first occurrence per (date, ticker).
+# Keep only the first occurrence per (date, ticker) in case a session was
+# ever logged twice.
 
 def parse_csv(csv_text: str) -> AllData:
     data: AllData = {}
@@ -72,9 +79,17 @@ def parse_csv(csv_text: str) -> AllData:
             continue
         seen.add(key)
 
-        data.setdefault(ticker, []).append(
-            Row(date=date, signal=signal, price=price, strength=strength, confidence=confidence, adx=adx)
-        )
+        def _num(i: int) -> Optional[float]:
+            try:
+                return float(parts[i].strip())
+            except (IndexError, ValueError):
+                return None
+
+        data.setdefault(ticker, []).append(Row(
+            date=date, signal=signal, price=price, strength=strength, confidence=confidence, adx=adx,
+            regime=parts[8].strip() if len(parts) > 8 else "",
+            rsi=_num(9), plus_di=_num(10), minus_di=_num(11),
+        ))
 
     for rows in data.values():
         rows.sort(key=lambda r: r.date)
