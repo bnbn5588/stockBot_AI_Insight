@@ -537,6 +537,11 @@ Your response fields (the output schema enforces the exact structure):
 
 Rules:
 - Include every ticker listed above, exactly once each.
+- stance is your view of the STOCK for a holder or buyer — never of the signal or of how
+  much to trust it. "favor" = bullish: positive outlook, reasonable to hold or buy.
+  "caution" = bearish or unclear: avoid, reduce, or wait. Followers see favor in green
+  and caution in orange, so a ticker you expect to fall must be "caution" even when you
+  are confident in its SELL signal (agreeing with a SELL means "caution", not "favor").
 - stance defaults to "favor" for a topPick and "caution" for a riskWatch ticker; if a
   ticker is flagged as both (a contradiction), weigh both quant angles plus the news to
   decide. Flip the default only when the news read materially changes the picture, and
