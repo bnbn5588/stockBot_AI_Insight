@@ -7,8 +7,8 @@ the final step (`prompt_final.py`) has its own prompt. No caching or scheduling 
 ## Inputs
 
 Per ticker, the history-sheet rows parsed by `analytics.parse_csv`:
-`{date, signal, price, strength, confidence, adx, regime, rsi, plus_di, minus_di}`
-(the last four come from the sheet's extra columns I–L and are empty on older rows).
+`{date, signal, price, strength, confidence, adx, regime, rsi, plus_di, minus_di, earnings}`
+(the last five come from the sheet's extra columns I–L and O and are empty on older rows).
 
 - `consensus` — BUY/SELL/HOLD counts across latest signals
 - `signal_changes` — tickers whose signal changed vs. their previous row (`"TICK: PREV→NEW"`)
@@ -29,6 +29,8 @@ How the signals work (trend-following, daily close data):
 - HOLD = long-term uptrend intact but short-term trend mixed.
 - agree% = how many of 5 trend reads point the same way (20/60/100 = 3/4/5 of 5). It is NOT a win probability.
 - ADX = trend strength regardless of direction; di=+X/-Y shows the direction (+DI vs -DI).
+- earn=in Nd = next earnings report in N calendar days (earn=- when none within 14 days or unknown).
+  The price can gap on the report in either direction; the trend signal cannot anticipate it.
 - Backtests show this system's value is risk control (smaller drawdowns), not predicting which stocks beat
   the market: its BUY vs SELL forward returns are close to a coin flip. Frame conclusions accordingly.
 
@@ -38,7 +40,7 @@ Signal changes since yesterday: {changes}        (or "No signal changes since ye
 Portfolio performance (equal-weight simulation):
 {port_line}
 
-Current snapshot (ticker | signal | price | streak | period_return | agree% | ADX | regime/DI | completed trades, win rate, expectancy):
+Current snapshot (ticker | signal | price | streak | period_return | agree% | ADX | regime/DI | earnings | completed trades, win rate, expectancy):
 {snapshot_lines}
 
 Signal effectiveness — avg next-trading-day % return across all historical data:
@@ -54,6 +56,8 @@ Rules:
   or where the signal looks unreliable (low agree% with weak ADX, frequent recent flips).
 - Ignore win rate / expectancy for tickers marked "too few to judge" — never cite them as evidence.
 - Highlight tickers that just changed signal today.
+- If a ticker you mention has earn=in Nd with N <= 7, say so in its reason (the trend read carries
+  event risk until the report is out). Do not treat an upcoming report as bullish or bearish by itself.
 - Be specific (ticker names, streak lengths, agree%, ADX, DI, % figures) and avoid overconfident language
   ("will rise", "guaranteed") — describe trend and risk, not certainty.
 - Do not invent data not present above.
@@ -72,6 +76,7 @@ f"period={sign}{period_change_pct:.1f}%".ljust(14)
 "agree=" + f"{confidence:.0f}".rjust(3)
 "adx=" + f"{adx:.0f}".rjust(3)
 f"regime={regime} di=+{plus_di:.0f}/-{minus_di:.0f}"     ("regime=? di=?" when missing)
+"earn=in {days}d" when column O is 0-14 days after today, else "earn=-"
 trade stats:
   0 completed trades        -> "trades=0"
   1-4 (MIN_TRADES_FOR_STATS) -> "trades=N (too few to judge)"
@@ -81,8 +86,8 @@ trade stats:
 Example:
 
 ```
-AAPL  | BUY  | $  342.37 | streak=BUY×3d  | period=+35.7%  | agree= 60 | adx= 17 | regime=UP di=+27/-24 | trades=2 (too few to judge)
-NVDA  | SELL | $  186.64 | streak=SELL×8d | period=+1.9%   | agree= 60 | adx= 29 | regime=DOWN di=+10/-42 | trades=6 wr=0% exp=-4.6%
+AAPL  | BUY  | $  342.37 | streak=BUY×3d  | period=+35.7%  | agree= 60 | adx= 17 | regime=UP di=+27/-24 | earn=- | trades=2 (too few to judge)
+NVDA  | SELL | $  186.64 | streak=SELL×8d | period=+1.9%   | agree= 60 | adx= 29 | regime=DOWN di=+10/-42 | earn=in 9d | trades=6 wr=0% exp=-4.6%
 ```
 
 `fwd_line`: `BUY: +0.061% (n=1150) | SELL: +0.047% (n=901) | HOLD: +0.088% (n=780)`

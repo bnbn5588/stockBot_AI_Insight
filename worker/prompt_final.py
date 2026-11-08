@@ -84,4 +84,6 @@ Rules:
   news was found) — don't drop either source.
 - Describe trend and risk, not certainty: no "will rise", "guaranteed", or price targets. These signals
   help manage risk; they are not forecasts of which stocks will beat the market.
+- If the quant angle mentions an upcoming earnings report, keep that in the reason: the stance
+  carries event risk until the report is out.
 - Do not invent data not present above."""

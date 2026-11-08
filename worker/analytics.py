@@ -28,6 +28,7 @@ class Row:
     rsi: Optional[float] = None
     plus_di: Optional[float] = None
     minus_di: Optional[float] = None
+    earnings: str = ""  # column O: next earnings date (YYYY-MM-DD) as known that day
 
 
 AllData = Dict[str, List[Row]]
@@ -39,6 +40,7 @@ AllData = Dict[str, List[Row]]
 #   "2026-11-06","AAPL","BUY","Moderate","60","Weak (ADX: 17.32)","$342.37",
 # followed by optional v2 columns H-N:
 #   engine, regime (UP/DOWN vs SMA200), RSI, +DI, -DI, SMA200, generated_at
+# and O: next earnings date (blank when unknown, e.g. ETFs).
 #
 # Keep only the first occurrence per (date, ticker) in case a session was
 # ever logged twice.
@@ -89,6 +91,7 @@ def parse_csv(csv_text: str) -> AllData:
             date=date, signal=signal, price=price, strength=strength, confidence=confidence, adx=adx,
             regime=parts[8].strip() if len(parts) > 8 else "",
             rsi=_num(9), plus_di=_num(10), minus_di=_num(11),
+            earnings=parts[14].strip()[:10] if len(parts) > 14 and _DATE_RE.match(parts[14].strip()) else "",
         ))
 
     for rows in data.values():

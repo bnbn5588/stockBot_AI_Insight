@@ -4,6 +4,7 @@ the same underlying data. ai-analysis-prompt-logic.md documents the template.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import List
 
 from . import analytics as A
@@ -32,6 +33,20 @@ def _trend(last: A.Row) -> str:
     if not last.regime or last.plus_di is None or last.minus_di is None:
         return "regime=? di=?"
     return f"regime={last.regime} di=+{last.plus_di:.0f}/-{last.minus_di:.0f}"
+
+
+# Earnings further out than this are left out of the prompt; within it the
+# report can gap the price whatever the trend says.
+EARNINGS_HORIZON_DAYS = 14
+
+
+def _earnings(last: A.Row, today: str) -> str:
+    if not last.earnings:
+        return "earn=-"
+    days = (date.fromisoformat(last.earnings) - date.fromisoformat(today)).days
+    if 0 <= days <= EARNINGS_HORIZON_DAYS:
+        return f"earn=in {days}d"
+    return "earn=-"
 
 
 def _build_data_sections(all_data: A.AllData, today: str) -> str:
@@ -75,6 +90,7 @@ def _build_data_sections(all_data: A.AllData, today: str) -> str:
             "agree=" + f"{last.confidence:.0f}".rjust(3),
             "adx=" + f"{last.adx:.0f}".rjust(3),
             _trend(last),
+            _earnings(last, today),
             perf,
         ]))
     snapshot_block = "\n".join(snapshot_lines)
@@ -100,6 +116,8 @@ How the signals work (trend-following, daily close data):
 - HOLD = long-term uptrend intact but short-term trend mixed.
 - agree% = how many of 5 trend reads point the same way (20/60/100 = 3/4/5 of 5). It is NOT a win probability.
 - ADX = trend strength regardless of direction; di=+X/-Y shows the direction (+DI vs -DI).
+- earn=in Nd = next earnings report in N calendar days (earn=- when none within 14 days or unknown).
+  The price can gap on the report in either direction; the trend signal cannot anticipate it.
 - Backtests show this system's value is risk control (smaller drawdowns), not predicting which stocks beat
   the market: its BUY vs SELL forward returns are close to a coin flip. Frame conclusions accordingly.
 
@@ -109,7 +127,7 @@ Portfolio: {len(tickers)} tickers | BUY: {consensus['BUY']} | SELL: {consensus['
 Portfolio performance (equal-weight simulation):
 {port_line}
 
-Current snapshot (ticker | signal | price | streak | period_return | agree% | ADX | regime/DI | completed trades, win rate, expectancy):
+Current snapshot (ticker | signal | price | streak | period_return | agree% | ADX | regime/DI | earnings | completed trades, win rate, expectancy):
 {snapshot_block}
 
 Signal effectiveness — avg next-trading-day % return across all historical data:
@@ -137,6 +155,8 @@ Rules:
   or where the signal looks unreliable (low agree% with weak ADX, frequent recent flips).
 - Ignore win rate / expectancy for tickers marked "too few to judge" — never cite them as evidence.
 - Highlight tickers that just changed signal today.
+- If a ticker you mention has earn=in Nd with N <= 7, say so in its reason (the trend read carries
+  event risk until the report is out). Do not treat an upcoming report as bullish or bearish by itself.
 - Be specific (ticker names, streak lengths, agree%, ADX, DI, % figures) and avoid overconfident language
   ("will rise", "guaranteed") — describe trend and risk, not certainty.
 - Do not invent data not present above."""
