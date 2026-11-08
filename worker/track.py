@@ -15,6 +15,13 @@ history in the sheet is a backtest, not a track record:
   UTC date D, so entered at the open of the first session on/after D.
 
 A call is "right" when BUY/favor beats SPY, or SELL/caution trails it.
+Also scores the engine over the rebuilt pre-go-live history (the sheet's
+v2 rows before TRACK_LIVE_SINCE) as a separate, clearly-labelled "history"
+block: v2 is causal, so those rows only used data available on each day,
+but v2 was chosen after seeing this period, so it is a backtest, not a
+track record. There is no equivalent for AI stances — a past stance can't
+be regenerated without the model and its news search seeing the future.
+
 Writes the summary to Redis `track:summary` (no TTL) for the dashboard.
 """
 from __future__ import annotations
@@ -129,11 +136,11 @@ def _aggregate(scored: List[dict], key: str) -> dict:
     return groups
 
 
-def engine_calls(all_data: A.AllData) -> Tuple[List[dict], List[dict]]:
+def engine_calls(all_data: A.AllData, start: str = LIVE_SINCE, end: str = "9999-12-31") -> Tuple[List[dict], List[dict]]:
     rows, events = [], []
     for ticker, history in all_data.items():
         for prev, cur in zip([None] + history[:-1], history):
-            if cur.date < LIVE_SINCE:
+            if not (start <= cur.date < end):
                 continue
             call = {"date": cur.date, "ticker": ticker, "label": cur.signal}
             rows.append(call)
@@ -164,9 +171,10 @@ def main() -> int:
 
     all_data = A.parse_csv(fetch_sheet_csv(os.environ["SHEET_ID"]))
     rows, events = engine_calls(all_data)
+    h_rows, h_events = engine_calls(all_data, start="0000-00-00", end=LIVE_SINCE)
     ai = ai_calls(redis_conn)
 
-    tickers = sorted({c["ticker"] for c in rows + ai} | {BENCH})
+    tickers = sorted({c["ticker"] for c in rows + h_rows + ai} | {BENCH})
     prices: Dict[str, Bars] = {}
     for t in tickers:
         try:
@@ -182,6 +190,8 @@ def main() -> int:
     s_rows = _score(rows, prices, days, strictly_after=True)
     s_events = _score(events, prices, days, strictly_after=True)
     s_ai = _score(ai, prices, days, strictly_after=False)
+    s_h_rows = _score(h_rows, prices, days, strictly_after=True)
+    s_h_events = _score(h_events, prices, days, strictly_after=True)
 
     def pending(scored):
         return sum(1 for s in scored if s[f"x{HORIZONS[0]}"] is None)
@@ -200,6 +210,12 @@ def main() -> int:
             "stances": _aggregate(s_ai, "label"),
             "pending": pending(s_ai),
             "days": len({c["date"] for c in ai}),
+        },
+        "history": {
+            "from": min((c["date"] for c in h_rows), default=None),
+            "to": max((c["date"] for c in h_rows), default=None),
+            "daily": _aggregate(s_h_rows, "label"),
+            "events": _aggregate(s_h_events, "label"),
         },
         "recentAi": sorted(s_ai, key=lambda s: (s["date"], s["ticker"]), reverse=True)[:30],
     }
