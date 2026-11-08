@@ -85,29 +85,40 @@ _FINAL_RECOMMENDATION_ITEM_SCHEMA = {
     "properties": {
         "ticker": {"type": "string"},
         "stance": {"type": "string", "enum": ["favor", "caution"]},
-        "reason": {"type": "string"},
+        "reason": {"type": "string", "minLength": 20},
     },
     "required": ["ticker", "stance", "reason"],
+    "additionalProperties": False,
 }
 
 def _final_json_schema(candidate_count: int) -> Dict[str, Any]:
     """recommendations is constrained to exactly candidate_count items —
     without minItems/maxItems, a response covering only one of several
-    flagged tickers is still schema-valid, which is exactly the shape both
-    observed stub failures took (one lone item instead of the full set)."""
+    flagged tickers is still schema-valid.
+
+    The length bounds target the observed root cause of the "test"/"a"/"b"
+    stub failures (see session transcripts): the model serialized the whole
+    recommendations array *inside* the summary string, so every
+    StructuredOutput call failed with "missing recommendations" until it sent
+    a throwaway probe to debug the schema — and when that probe happened to
+    validate, the CLI accepted it as the final answer. summary's maxLength
+    turns the real mistake into a clear "summary too long" error, and the
+    minLengths make one-word probes invalid so they can't be accepted.
+    recommendations is listed before summary so it's generated first."""
     return {
         "type": "object",
         "properties": {
             "generatedAt": {"type": "string"},
-            "summary": {"type": "string"},
             "recommendations": {
                 "type": "array",
                 "items": _FINAL_RECOMMENDATION_ITEM_SCHEMA,
                 "minItems": candidate_count,
                 "maxItems": candidate_count,
             },
+            "summary": {"type": "string", "minLength": 40, "maxLength": 1200},
         },
-        "required": ["generatedAt", "summary", "recommendations"],
+        "required": ["generatedAt", "recommendations", "summary"],
+        "additionalProperties": False,
     }
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)

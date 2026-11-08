@@ -527,12 +527,13 @@ Flagged tickers:
 - NVDA: [riskWatch] Just flipped HOLD→SELL today after a strong +24.4% period return, with ADX=32 confirming trend strength but a 25% win rate and -1.8% expectancy backing the sell case. | news: Nvidia reported fiscal Q2 results on Aug 26 with revenue up ~106% year over year to $96.2 billion and issued surprising forward guidance (CFO citing ~70% revenue growth for fiscal 2028 and ~89% implied for the October quarter), sending the stock up roughly 7.4% on Aug 27. (source: The Motley Fool, 2026-08-27) — read: The blowout results, above-expectation guidance and a ~7.4% post-earnings rally run counter to the day-old HOLD-to-SELL flip, making the SELL signal less trustworthy even with ADX=32 showing trend strength, since the bearish 25% win rate and -1.8% expectancy now sit against a fresh fundamental catalyst pushing the other way.
 - RXT: [riskWatch] Longest-running SELL streak (11 days) with a 0% historical win rate and -48.7% expectancy, the worst risk metrics on the board, alongside a -39.6% period return. | news: no relevant recent news found
 
-Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
-{
-  "generatedAt": "2026-08-28",
-  "summary": "2-3 sentence final takeaway synthesizing both the quant picture and the news read",
-  "recommendations": [{"ticker": "TICK", "stance": "favor", "reason": "one sentence combining the quant signal and the news finding"}]
-}
+Your response fields (the output schema enforces the exact structure):
+- generatedAt: "2026-08-28"
+- recommendations: one entry per flagged ticker, each with ticker, stance ("favor" or
+  "caution"), and reason (one sentence combining the quant signal and the news finding).
+  This is its own top-level field — never put recommendation data inside summary.
+- summary: a plain-prose 2-3 sentence final takeaway synthesizing both the quant picture
+  and the news read. No JSON, brackets, or per-ticker lists in it.
 
 Rules:
 - Include every ticker listed above, exactly once each.

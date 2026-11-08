@@ -61,12 +61,13 @@ Quant portfolio note: {analysis.get('portfolioNote', '')}
 Flagged tickers:
 {tickers_block}
 
-Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
-{{
-  "generatedAt": "{today}",
-  "summary": "2-3 sentence final takeaway synthesizing both the quant picture and the news read",
-  "recommendations": [{{"ticker": "TICK", "stance": "favor", "reason": "one sentence combining the quant signal and the news finding"}}]
-}}
+Your response fields (the output schema enforces the exact structure):
+- generatedAt: "{today}"
+- recommendations: one entry per flagged ticker, each with ticker, stance ("favor" or
+  "caution"), and reason (one sentence combining the quant signal and the news finding).
+  This is its own top-level field — never put recommendation data inside summary.
+- summary: a plain-prose 2-3 sentence final takeaway synthesizing both the quant picture
+  and the news read. No JSON, brackets, or per-ticker lists in it.
 
 Rules:
 - Include every ticker listed above, exactly once each.
