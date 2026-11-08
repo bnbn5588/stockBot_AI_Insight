@@ -23,6 +23,14 @@ predictable/slower than the signal-only path until proven out.
 
 `--json-schema` forces the reply to match the given schema exactly, returned
 pre-parsed in the envelope's `structured_output` field.
+
+`--model` pins the model (CLAUDE_MODEL, default DEFAULT_MODEL) instead of
+following the account default, so a default change can't silently change the
+output mid-way through the forward test (worker.track).
+
+`run_checked` adds one correction round: the response is checked against the
+input data (see quality.py) and, if anything is off, sent back once with the
+list of problems.
 """
 from __future__ import annotations
 
@@ -32,12 +40,13 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .logging_setup import get_logger
 
 log = get_logger("claude_cli")
 
+DEFAULT_MODEL = "claude-sonnet-5-5"
 DEFAULT_TIMEOUT_SECONDS = 300
 NEWS_TIMEOUT_SECONDS = 480  # web search adds turns/latency
 
@@ -80,6 +89,31 @@ NEWS_ONLY_JSON_SCHEMA: Dict[str, Any] = {
     "required": ["generatedAt", "newsHighlights"],
 }
 
+# Headline-fed news step (news_feed.py): the model cites headlines by id only;
+# publisher/date/url are filled in by the code from the fetched headlines.
+NEWS_FROM_HEADLINES_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "generatedAt": {"type": "string"},
+        "newsHighlights": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string"},
+                    "headlineIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "summary": {"type": "string", "minLength": 20},
+                    "recommendation": {"type": "string", "minLength": 20},
+                },
+                "required": ["ticker", "headlineIds", "summary", "recommendation"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["generatedAt", "newsHighlights"],
+    "additionalProperties": False,
+}
+
 _FINAL_RECOMMENDATION_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -91,7 +125,7 @@ _FINAL_RECOMMENDATION_ITEM_SCHEMA = {
     "additionalProperties": False,
 }
 
-def _final_json_schema(candidate_count: int) -> Dict[str, Any]:
+def final_json_schema(candidate_count: int) -> Dict[str, Any]:
     """recommendations is constrained to exactly candidate_count items —
     without minItems/maxItems, a response covering only one of several
     flagged tickers is still schema-valid.
@@ -126,6 +160,10 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 class ClaudeCLIError(RuntimeError):
     pass
+
+
+def model_name() -> str:
+    return os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL)
 
 
 def _find_claude_binary() -> str:
@@ -204,6 +242,7 @@ def _run_cli_once(
     cmd = [
         binary, "-p",
         "--output-format", "json",
+        "--model", model_name(),
         "--tools", tools,
         "--json-schema", json.dumps(schema),
     ]
@@ -300,6 +339,47 @@ def _run_cli(
     )
 
 
+def _add_usage(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: a.get(k, 0) + b.get(k, 0) for k in set(a) | set(b)}
+
+
+def run_checked(
+    prompt: str,
+    schema: Dict[str, Any],
+    check: Callable[[Dict[str, Any]], List[str]],
+    tools: str = "",
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+    """_run_cli, then `check`; on issues, one retry that shows the model its
+    previous answer and what is wrong with it. Returns (result, usage summed
+    over both calls, issues still present). The retry is kept even if it
+    still has issues, unless it has more than the first answer had."""
+    result, usage = _run_cli(prompt, schema, tools=tools, timeout_seconds=timeout_seconds)
+    issues = check(result)
+    if not issues:
+        return result, usage, []
+    log.warning("Response has %d issue(s), asking for a correction: %s", len(issues), issues)
+    retry_prompt = (
+        f"{prompt}\n\n---\nYour previous answer was:\n{json.dumps(result, ensure_ascii=False)}\n\n"
+        "It has these problems:\n" + "\n".join(f"- {i}" for i in issues) +
+        "\n\nReturn a corrected answer that fixes every problem and keeps everything else that "
+        "was right. Use only the data given above."
+    )
+    try:
+        fixed, usage2 = _run_cli(retry_prompt, schema, tools=tools, timeout_seconds=timeout_seconds)
+    except ClaudeCLIError:
+        log.warning("Correction call failed — keeping the first answer", exc_info=True)
+        return result, usage, issues
+    usage = _add_usage(usage, usage2)
+    fixed_issues = check(fixed)
+    if len(fixed_issues) > len(issues):
+        log.warning("Correction made it worse (%d issues) — keeping the first answer", len(fixed_issues))
+        return result, usage, issues
+    if fixed_issues:
+        log.warning("Issues left after correction: %s", fixed_issues)
+    return fixed, usage, fixed_issues
+
+
 def get_analysis(prompt: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Runs prompt through `claude -p` (headless, no tool access, schema-
     constrained output) and returns (analysis dict, token usage dict)."""
@@ -326,5 +406,5 @@ def get_final_recommendations(
     results — no search needed, so this stays fast like get_analysis.
     candidate_count must match prompt_final.candidate_tickers(analysis) —
     it forces the recommendations array to exactly that length (see
-    _final_json_schema)."""
-    return _run_cli(prompt, _final_json_schema(candidate_count), tools="", timeout_seconds=timeout_seconds)
+    final_json_schema)."""
+    return _run_cli(prompt, final_json_schema(candidate_count), tools="", timeout_seconds=timeout_seconds)

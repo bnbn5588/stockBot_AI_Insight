@@ -30,10 +30,13 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
+from . import analytics as A
+from . import quality as Q
 from . import redis_client as R
-from .claude_cli import ClaudeCLIError, get_final_recommendations
+from .claude_cli import ClaudeCLIError, final_json_schema, model_name, run_checked
 from .line_broadcast import LineBroadcastError, broadcast, notify_failure
 from .logging_setup import get_logger
+from .main import fetch_sheet_csv
 from .prompt_final import build_final_prompt, candidate_tickers
 
 load_dotenv()
@@ -89,10 +92,21 @@ def main() -> int:
     if not tickers:
         log.info("No topPicks/riskWatch tickers to synthesize for today.")
         final, usage, prompt = {"generatedAt": today, "summary": "", "recommendations": []}, {}, None
+        issues = []
     else:
         prompt = build_final_prompt(analysis, news, today)
+        # Signals and earnings dates for the checks; without the sheet the
+        # checks that need them are skipped rather than failing the run.
         try:
-            final, usage = get_final_recommendations(prompt, candidate_count=len(tickers))
+            all_data = A.parse_csv(fetch_sheet_csv(os.environ["SHEET_ID"]))
+        except Exception:
+            log.warning("Sheet unavailable — final checks run without signal data", exc_info=True)
+            all_data = {}
+        try:
+            final, usage, issues = run_checked(
+                prompt, final_json_schema(len(tickers)),
+                check=lambda r: Q.check_final(r, analysis, tickers, news, all_data, today),
+            )
         except ClaudeCLIError as exc:
             log.error("Claude CLI error", exc_info=True)
             notify_failure("worker.main_final", f"Claude CLI error: {exc}")
@@ -100,7 +114,8 @@ def main() -> int:
 
     result = {
         **final,
-        "model": os.environ.get("CLAUDE_MODEL_LABEL", "claude (subscription CLI)"),
+        "qualityIssues": issues,
+        "model": model_name(),
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
         "tokenUsage": usage,
     }

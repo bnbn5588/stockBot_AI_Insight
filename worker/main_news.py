@@ -12,6 +12,11 @@ invocation regenerates and overwrites ai-analysis-news:{date}, so this can be
 run — and scheduled — more than once a day for fresher news. Run manually:
     python -m worker.main_news
 
+News comes from Yahoo Finance headlines fetched by the code (news_feed.py);
+the model reads and cites them by id, and publisher/date/url are filled in
+from the fetched data. Only if no headline source is reachable at all does it
+fall back to letting the model web-search (the original behaviour).
+
 At the end of a successful run, this calls main_final.main() directly —
 final synthesis (see main_final.py) only makes sense immediately after a
 fresh news check, so it's chained here rather than given its own schedule;
@@ -23,30 +28,42 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
 from . import analytics as A
 from . import redis_client as R
-from .claude_cli import ClaudeCLIError, get_news_highlights
+from . import news_feed
+from . import quality as Q
+from .claude_cli import (NEWS_FROM_HEADLINES_JSON_SCHEMA, ClaudeCLIError, get_news_highlights,
+                         model_name, run_checked)
 from .line_broadcast import notify_failure
 from .logging_setup import get_logger
 from .main import fetch_sheet_csv
 from .main_final import main as run_final_synthesis
-from .prompt_news import NewsCandidate, build_news_only_prompt
+from .prompt_news import NewsCandidate, build_news_from_headlines_prompt, build_news_only_prompt
 
 load_dotenv()
 
 log = get_logger("main_news")
 
 
-def _collect_candidates(analysis: dict, all_data: A.AllData) -> List[NewsCandidate]:
+def _earnings_note(all_data: A.AllData, ticker: str, today: str) -> str:
+    rows = all_data.get(ticker)
+    days = Q.earnings_days(rows[-1], today) if rows else None
+    if days is None or days < 0:
+        return ""
+    return f"next earnings {rows[-1].earnings} (in {days} days)"
+
+
+def _collect_candidates(analysis: dict, all_data: A.AllData, today: str) -> List[NewsCandidate]:
     candidates: Dict[str, NewsCandidate] = {}
 
     for item in analysis.get("topPicks", []):
         candidates[item["ticker"]] = {
             "ticker": item["ticker"], "signal": "BUY", "reason": item["reason"],
+            "earnings": _earnings_note(all_data, item["ticker"], today),
         }
     for item in analysis.get("riskWatch", []):
         # riskWatch can include contradiction flags on either signal; the
@@ -55,6 +72,7 @@ def _collect_candidates(analysis: dict, all_data: A.AllData) -> List[NewsCandida
         signal = rows[-1].signal if rows else "?"
         candidates[item["ticker"]] = {
             "ticker": item["ticker"], "signal": signal, "reason": item["reason"],
+            "earnings": _earnings_note(all_data, item["ticker"], today),
         }
 
     for ticker, rows in all_data.items():
@@ -65,9 +83,48 @@ def _collect_candidates(analysis: dict, all_data: A.AllData) -> List[NewsCandida
             candidates[ticker] = {
                 "ticker": ticker, "signal": last.signal,
                 "reason": f"Signal changed {prev.signal}→{last.signal} today.",
+                "earnings": _earnings_note(all_data, ticker, today),
             }
 
     return list(candidates.values())
+
+
+def _fetch_all_headlines(candidates: List[NewsCandidate], since) -> Optional[Dict[str, List[dict]]]:
+    """{ticker: headlines}, or None when no source was reachable for any
+    ticker (then the caller falls back to model web search)."""
+    headlines: Dict[str, List[dict]] = {}
+    failed = 0
+    for c in candidates:
+        try:
+            headlines[c["ticker"]] = news_feed.fetch_headlines(c["ticker"], since)
+        except RuntimeError as exc:
+            log.warning("%s", exc)
+            headlines[c["ticker"]] = []
+            failed += 1
+    return None if failed == len(candidates) else headlines
+
+
+def _attach_sources(news: dict, headlines: Dict[str, List[dict]]) -> dict:
+    """Fill source/publishedDate/headlines from the cited ids, keeping the
+    fields the dashboard and final step already read. Entries whose ids
+    don't resolve (still wrong after the correction round) are dropped."""
+    out = []
+    for item in news.get("newsHighlights", []):
+        by_id = {h["id"]: h for h in headlines.get(item.get("ticker"), [])}
+        cited = [by_id[i] for i in item.get("headlineIds", []) if i in by_id]
+        if not cited:
+            log.warning("Dropping news entry for %s: no valid headline ids", item.get("ticker"))
+            continue
+        newest = max(cited, key=lambda h: h["published"])
+        out.append({
+            "ticker": item["ticker"],
+            "summary": item["summary"],
+            "source": newest["publisher"] or "Yahoo Finance",
+            "publishedDate": newest["published"][:10],
+            "recommendation": item["recommendation"],
+            "headlines": [{k: h[k] for k in ("title", "publisher", "published", "url")} for h in cited],
+        })
+    return {**news, "newsHighlights": out}
 
 
 def main() -> int:
@@ -116,7 +173,7 @@ def main() -> int:
         return 1
     all_data = A.filter_active_tickers(all_data)
 
-    candidates = _collect_candidates(analysis, all_data)
+    candidates = _collect_candidates(analysis, all_data, today)
     log.info("Collected %d news candidates: %s", len(candidates), [c["ticker"] for c in candidates])
     prompt = None
     if not candidates:
@@ -124,16 +181,35 @@ def main() -> int:
         result = {"generatedAt": today, "newsHighlights": []}
     else:
         lookback_days = int(os.environ.get("NEWS_LOOKBACK_DAYS", "2"))
-        prompt = build_news_only_prompt(candidates, today, lookback_days=lookback_days)
+        since = news_feed.lookback_start(now, lookback_days)
+        headlines = _fetch_all_headlines(candidates, since)
+        issues: List[str] = []
         try:
-            news, usage = get_news_highlights(prompt)
+            if headlines is not None:
+                log.info("Fetched headlines since %s: %s", since.isoformat(timespec="minutes"),
+                         {t: len(h) for t, h in headlines.items()})
+                window = f"{(now - since).days} days"
+                prompt = build_news_from_headlines_prompt(candidates, headlines, today, window)
+                news, usage, issues = run_checked(
+                    prompt, NEWS_FROM_HEADLINES_JSON_SCHEMA,
+                    check=lambda r: Q.check_news(r, headlines),
+                )
+                news = _attach_sources(news, headlines)
+                news_source = "yahoo-headlines"
+            else:
+                log.warning("No headline source reachable — falling back to model web search")
+                prompt = build_news_only_prompt(candidates, today, lookback_days=lookback_days)
+                news, usage = get_news_highlights(prompt)
+                news_source = "web-search"
         except ClaudeCLIError as exc:
             log.error("Claude CLI error", exc_info=True)
             notify_failure("worker.main_news", f"Claude CLI error: {exc}")
             return 1
         result = {
             **news,
-            "model": os.environ.get("CLAUDE_MODEL_LABEL", "claude (subscription CLI)"),
+            "newsSource": news_source,
+            "qualityIssues": issues,
+            "model": model_name(),
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
             "tokenUsage": usage,
         }

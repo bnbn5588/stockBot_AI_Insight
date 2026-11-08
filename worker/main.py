@@ -21,10 +21,11 @@ from dotenv import load_dotenv
 
 from . import analytics as A
 from . import redis_client as R
-from .claude_cli import ClaudeCLIError, get_analysis
+from . import quality as Q
+from .claude_cli import ANALYSIS_JSON_SCHEMA, ClaudeCLIError, model_name, run_checked
 from .line_broadcast import notify_failure
 from .logging_setup import get_logger
-from .prompt import build_prompt
+from .prompt import MIN_TRADES_FOR_STATS, build_prompt
 
 load_dotenv()
 
@@ -41,10 +42,14 @@ def fetch_sheet_csv(sheet_id: str) -> str:
 
 def generate_analysis(all_data: A.AllData, today: str) -> tuple[dict, str]:
     prompt = build_prompt(all_data, today)
-    analysis, usage = get_analysis(prompt)
+    analysis, usage, issues = run_checked(
+        prompt, ANALYSIS_JSON_SCHEMA,
+        check=lambda r: Q.check_analysis(r, all_data, today, MIN_TRADES_FOR_STATS),
+    )
     result = {
         **analysis,
-        "model": os.environ.get("CLAUDE_MODEL_LABEL", "claude (subscription CLI)"),
+        "qualityIssues": issues,
+        "model": model_name(),
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
         "tokenUsage": usage,
     }

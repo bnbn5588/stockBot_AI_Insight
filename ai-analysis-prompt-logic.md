@@ -94,8 +94,12 @@ NVDA  | SELL | $  186.64 | streak=SELL×8d | period=+1.9%   | agree= 60 | adx= 2
 
 ## Call
 
-`claude -p --output-format json --tools "" --json-schema <ANALYSIS_JSON_SCHEMA>`, prompt piped
-via stdin, run from an empty temp directory (see `claude_cli.py` docstring for why). The
+`claude -p --output-format json --model $CLAUDE_MODEL --tools "" --json-schema <ANALYSIS_JSON_SCHEMA>`
+(model default `claude-sonnet-5-5`), prompt piped via stdin, run from an empty temp directory
+(see `claude_cli.py` docstring for why). The response is then checked by
+`quality.check_analysis`; on any issue the prompt is re-sent once with the previous answer and
+the list of problems appended (`claude_cli.run_checked`), and leftovers are stored as
+`qualityIssues`. The
 response's `structured_output` must match:
 
 ```

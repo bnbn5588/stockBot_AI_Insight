@@ -25,6 +25,13 @@ worker/
                      main_news.py's news findings into one favor/caution stance per
                      ticker. No new data, no search — pure reconciliation.
   claude_cli.py      Shells out to the `claude` CLI instead of the Anthropic SDK.
+                     Pins the model (--model) and runs the check-and-correct
+                     round (run_checked).
+  quality.py         Checks each response against the input data (tickers,
+                     BUY-only topPicks, quoted ADX/agree%/price, forecast wording,
+                     earnings mentions, stance flips) — see "Quality checks".
+  news_feed.py       Fetches recent Yahoo Finance headlines per ticker (RSS +
+                     search endpoint, no key) with stable ids for the news step.
   redis_client.py    Redis key names + TTL.
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
   main.py            Production entry point — signal-only analysis, writes to
@@ -71,10 +78,12 @@ Then `cp .env.example .env` and fill in:
 - `SHEET_ID` — Google Sheet ID containing the signal history (7-column, no header row —
   see `analytics.py`'s `parse_csv` for the exact format).
 - `REDIS_URL` — Redis instance to read/write results.
-- `CLAUDE_MODEL_LABEL` — optional, cosmetic only (stored in the result's `model` field).
-- `NEWS_LOOKBACK_DAYS` — `worker.main_news` only, default `2`. How far back its web
-  search looks for news. Keep it short if you're running that step several times a
-  day — a wide window just re-returns the same older headlines on every run.
+- `CLAUDE_MODEL` — optional, default `claude-sonnet-5-5`. Passed as `--model` to every
+  call and stored in each result's `model` field. Pinned so the account default
+  changing can't silently change the output during the forward test (`worker.track`);
+  change it deliberately and note the date.
+- `NEWS_LOOKBACK_DAYS` — `worker.main_news` only, default `2` (Mondays reach back at
+  least 3 days, over the weekend). Headlines older than this are not shown to the model.
 - `FINAL_SYNTHESIS_DELAY_SECONDS` — `worker.main_news` only, default `5`. Pause before
   chaining into `worker.main_final` — see `claude_cli.py`'s non-obvious-behavior list.
 - `LINE_CHANNEL_ACCESS_TOKEN` — optional. Set this to broadcast the final
@@ -280,11 +289,11 @@ bleeds into the next trading day.
 
 | Key                              | Written by      | Contents                                                              |
 |------------------------------------|-----------------|-------------------------------------------------------------------------|
-| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
+| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
 | `ai-analysis-prompt:{date}`       | `main.py`       | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
-| `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each with a per-item `recommendation`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
+| `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each `ticker`, `summary`, `source`, `publishedDate`, `recommendation`, and `headlines` — the cited articles' `title`/`publisher`/`published`/`url`), `newsSource` (`yahoo-headlines` or `web-search` fallback), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
 | `ai-analysis-news-prompt:{date}`  | `main_news.py`  | The news-only prompt string, stored on its own key. |
-| `ai-analysis-final:{date}`        | `main_final.py` | `generatedAt`, `summary`, `recommendations` (each `ticker`/`stance`/`reason`), `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-final-prompt:{date}` instead. |
+| `ai-analysis-final:{date}`        | `main_final.py` | `generatedAt`, `summary`, `recommendations` (each `ticker`/`stance`/`reason`), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-final-prompt:{date}` instead. |
 | `ai-analysis-final-prompt:{date}` | `main_final.py` | The final-synthesis prompt string, stored on its own key. |
 
 `tokenUsage` (both result keys): `inputTokens`, `outputTokens`,
@@ -304,27 +313,29 @@ not invent data not present above"). No tool access at all (`claude_cli.get_anal
 — fast, no external dependencies beyond the sheet. Produces `topPicks`/`riskWatch` —
 the single source of truth for which tickers matter today and why.
 
-**News-only (`prompt_news.py`, experimental, `main_news.py`).** Runs *after* the
+**News-only (`prompt_news.py`, `main_news.py`).** Runs *after* the
 signal-only analysis and depends on its output: reads `topPicks` + `riskWatch` +
-any signal-change ticker from the cached `ai-analysis:{date}`, and asks Claude to
-search news for exactly those tickers — nothing else, and it's explicitly told the
-quant reasoning is already done and not its job to repeat. Returns only
-`newsHighlights` (`ticker`, `summary`, `source`, `publishedDate`, `recommendation`).
-`recommendation` is scoped to that one ticker's news — whether it reinforces, tempers,
-or contradicts the specific flagged reason (expectancy, streak, confidence) — not a
-standalone buy/sell call or a re-derived `portfolioNote`. Rules against fabrication:
-only tickers from the flagged list, real source/date from an actual search result, omit
-(don't stub) a ticker with no relevant news, no new quantitative figures invented in the
-recommendation.
+any signal-change ticker from the cached `ai-analysis:{date}`. For exactly those
+tickers the code fetches the recent Yahoo Finance headlines (`news_feed.py`: up to 12
+per ticker inside the lookback window, each with an id like `NVDA-3`) and lists them in
+the prompt, with each ticker's next earnings date. Claude only filters and summarizes:
+it keeps company-specific, price-relevant news (earnings, guidance, analyst actions,
+deals, legal/regulatory, management), skips opinion/listicle pieces, and cites the
+headlines it used by id. The code then fills `source`/`publishedDate`/`headlines` from
+the fetched data, so a source, date or link can't be invented, and nothing older than
+the window can appear. `recommendation` says whether the news makes the flagged trend
+read more or less trustworthy — not a standalone buy/sell call.
+
+If no headline source is reachable for any ticker, the step falls back to the original
+behaviour — Claude web-searches itself (`claude_cli.get_news_highlights`, WebSearch/
+WebFetch only) — and the result is marked `newsSource: "web-search"`.
 
 This keeps candidate selection deterministic (Python-computed from the already-cached
 analysis) rather than having the model re-guess which tickers matter, so the two layers
 can't drift apart or contradict each other, and neither call repeats the other's work.
 
-Tradeoff: `claude_cli.get_news_highlights` allows `WebSearch`/`WebFetch` (never
-Bash/Edit/Write) and runs several turns instead of 1, so it's noticeably slower than the
-tool-free signal-only path and has a different reliability profile. Run it manually a
-few times and compare output before putting it on any schedule.
+Known limit: for the busiest tickers (e.g. NVDA) 12 headlines may cover only the last
+few hours, since the feeds are newest-first.
 
 **Final synthesis (`prompt_final.py`, `main_final.py`).** Runs *after* both prior
 steps and depends on both: reads `topPicks`/`riskWatch` from `ai-analysis:{date}` and
@@ -339,6 +350,23 @@ same-day NVDA SELL got flipped to `favor` after a fresh earnings beat + ~7.4% ra
 directly contradicted it, while a no-news ticker correctly stayed at its quant-implied
 `caution`. Chained automatically at the end of `worker.main_news`, not on its own
 schedule (see "Final-synthesis step" above).
+
+## Quality checks
+
+Every Claude response is checked against the data it was given (`quality.py`) before it
+is cached or broadcast. If anything fails, the prompt is sent once more with the
+previous answer and the list of problems (`claude_cli.run_checked`); the corrected answer
+is used unless it has more problems than the first. Whatever is still wrong is logged
+and stored as `qualityIssues` in the Redis result — the run is not failed for it.
+
+| Step | Checks |
+|---|---|
+| analysis | tickers exist in the snapshot; topPicks are BUY; 1–3 entries each; ADX / agree% / `$price` quoted in a ticker's reason match its row (ADX ±1.5, price ±2%; round ADX thresholds 20/25/40 are ignored); no win rate/expectancy cited for "too few to judge" tickers; earnings within 7 days mentioned; no forecast wording ("will rise", "guaranteed", price targets) |
+| news | tickers are from the flagged list, one entry each; every cited headline id exists for that ticker; no forecast wording |
+| final | exactly the flagged tickers, once each; a stance that flips the quant default (favor for topPick, caution for riskWatch) needs news for that ticker; `favor` on a SELL needs news; earnings within 7 days mentioned; no forecast wording |
+
+The checks catch mechanical errors only — they say nothing about whether the reasoning
+is good.
 
 ## Sample prompts and output
 
