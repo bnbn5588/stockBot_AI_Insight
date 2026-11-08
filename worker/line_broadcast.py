@@ -16,7 +16,7 @@ channel; those tokens don't work here).
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -25,6 +25,7 @@ from .logging_setup import get_logger
 log = get_logger("line_broadcast")
 
 BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast"
+PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 # LINE Flex Message hard limits — altText is truncated to fit, not just
 # guarded, since going over it is a hard API rejection, not a warning.
@@ -162,24 +163,28 @@ def broadcast(result: Dict[str, Any]) -> None:
         raise LineBroadcastError(f"LINE broadcast failed ({res.status_code}): {res.text}")
 
 
-def send_text_message(text: str) -> None:
-    """POSTs a plain-text broadcast message to LINE's Broadcast endpoint —
-    used for operational alerts (e.g. a failed run) rather than the Flex
-    Message carousel build_flex_message()/broadcast() build for the final
-    recommendation. Raises LineBroadcastError on any failure, same as
-    broadcast()."""
+def send_text_message(text: str, to: Optional[str] = None) -> None:
+    """POSTs a plain-text message to LINE — used for operational alerts (e.g.
+    a failed run) rather than the Flex Message carousel
+    build_flex_message()/broadcast() build for the final recommendation.
+    With `to` (a LINE user ID), pushes to that one user via the Push
+    endpoint; otherwise broadcasts to every follower. Raises
+    LineBroadcastError on any failure, same as broadcast()."""
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
     if not token:
         raise LineBroadcastError("LINE_CHANNEL_ACCESS_TOKEN environment variable is not set")
 
+    body: Dict[str, Any] = {"messages": [{"type": "text", "text": _truncate(text, _MAX_TEXT_MESSAGE_CHARS)}]}
+    if to:
+        body["to"] = to
     try:
         res = requests.post(
-            BROADCAST_URL,
+            PUSH_URL if to else BROADCAST_URL,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
             },
-            json={"messages": [{"type": "text", "text": _truncate(text, _MAX_TEXT_MESSAGE_CHARS)}]},
+            json=body,
             timeout=30,
         )
     except requests.RequestException as exc:
@@ -195,10 +200,17 @@ def notify_failure(job: str, reason: str) -> None:
     LINE_CHANNEL_ACCESS_TOKEN isn't set, since a missing token is this
     project's documented way to disable LINE entirely — and swallows
     LineBroadcastError itself (just logs it) so a notification failure never
-    masks or replaces the original error that triggered it."""
+    masks or replaces the original error that triggered it.
+
+    If LINE_ADMIN_USER_ID is set, the alert is pushed to that one user only,
+    so followers never see operational errors; otherwise it falls back to a
+    broadcast to every follower."""
     if not os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"):
         return
     try:
-        send_text_message(f"[stockBot] {job} failed: {reason}")
+        send_text_message(
+            f"[stockBot] {job} failed: {reason}",
+            to=os.environ.get("LINE_ADMIN_USER_ID") or None,
+        )
     except LineBroadcastError:
         log.error("Failed to send LINE failure notification", exc_info=True)
