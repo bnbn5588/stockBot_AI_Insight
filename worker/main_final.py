@@ -116,6 +116,10 @@ def main() -> int:
     try:
         redis_conn.set(final_key, json.dumps(result), ex=R.CACHE_TTL_SECONDS)
         log.info("Wrote final recommendations for %s to Redis key '%s'.", today, final_key)
+        # Same payload, no TTL — the forward-test record (worker.track). A
+        # re-run on the same day overwrites it, so the archive holds the
+        # day's last (= broadcast) stance.
+        redis_conn.set(R.final_archive_key(today), json.dumps(result))
     except Exception:
         log.error("Failed to write to Redis", exc_info=True)
         notify_failure("worker.main_final", "Failed to write final recommendations to Redis")

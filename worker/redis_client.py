@@ -41,3 +41,9 @@ def final_cache_key(today: str) -> str:
 
 def final_prompt_cache_key(today: str) -> str:
     return f"ai-analysis-final-prompt:{today}"
+
+
+def final_archive_key(today: str) -> str:
+    """Permanent (no TTL) copy of the day's final recommendations, kept so
+    worker.track can score past stances after the 25h cache key expires."""
+    return f"ai-analysis-final-archive:{today}"
