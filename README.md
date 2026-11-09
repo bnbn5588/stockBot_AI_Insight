@@ -33,6 +33,8 @@ worker/
   news_feed.py       Fetches recent Yahoo Finance headlines per ticker (RSS +
                      search endpoint, no key) with stable ids for the news step.
   redis_client.py    Redis key names + TTL.
+  disk_check.py      Daily host disk check — LINE push to the admin only when
+                     usage reaches DISK_WARN_PERCENT (default 85).
   archive.py         Permanent per-day JSONL record of every step (inputs,
                      prompt, answer, headlines) — see "Run archive".
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
@@ -329,6 +331,8 @@ one-off `headlines` record, a 7-day snapshot for every ticker.
 -v /path/to/stockBot_AI_Insight/data:/app/data
 ```
 Size is roughly 30–100 KB a day. It lives on one disk only — back it up if it matters.
+`worker.disk_check` (cron, daily 02:30 UTC, `log/` mounted) pushes a LINE message to
+`LINE_ADMIN_USER_ID` when the host disk reaches `DISK_WARN_PERCENT` (default 85%).
 
 ## Three analyses, not overlapping
 
