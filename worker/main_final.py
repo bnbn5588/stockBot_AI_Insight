@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from . import analytics as A
+from . import archive
 from . import quality as Q
 from . import redis_client as R
 from .claude_cli import ClaudeCLIError, final_json_schema, model_name, run_checked
@@ -127,6 +128,7 @@ def main() -> int:
         usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
         usage.get("totalCostUsd", 0.0), time.monotonic() - start,
     )
+    archive.write("final", today, {"prompt": prompt, "result": result})
 
     try:
         redis_conn.set(final_key, json.dumps(result), ex=R.CACHE_TTL_SECONDS)

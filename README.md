@@ -33,6 +33,8 @@ worker/
   news_feed.py       Fetches recent Yahoo Finance headlines per ticker (RSS +
                      search endpoint, no key) with stable ids for the news step.
   redis_client.py    Redis key names + TTL.
+  archive.py         Permanent per-day JSONL record of every step (inputs,
+                     prompt, answer, headlines) — see "Run archive".
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
   main.py            Production entry point — signal-only analysis, writes to
                      ai-analysis:{date} and ai-analysis-prompt:{date}.
@@ -301,6 +303,32 @@ bleeds into the next trading day.
 `totalCostUsd` is the equivalent API-billed value Claude Code always reports in its
 output — it does not mean the call was actually billed per-token; subscription usage
 counts against the plan instead (see `claude_cli._extract_usage`).
+
+## Run archive
+
+Redis keeps results and prompts for 25h and Yahoo serves headlines for only a few
+days, so each step also appends a permanent record to `data/archive/YYYY-MM-DD.jsonl`
+(`archive.py`), kept as training/evaluation data. One JSON line per step run; a re-run
+appends another line, so the last line per step is what was cached (and broadcast).
+
+| `step` | Fields besides `schema`, `step`, `today`, `writtenAt` |
+|---|---|
+| `analysis` | `dataDate`, `input` (each ticker's latest sheet row as the step saw it, earnings date included), `prompt`, `result` (the Redis payload) |
+| `news` | `since`, `candidates`, `headlines` (what the model was shown, by ticker), `otherHeadlines` (same window, uncapped, for every ticker that wasn't flagged — archive only), `prompt`, `result` |
+| `final` | `prompt`, `result` |
+
+Outcomes (forward returns) are not stored — they can be computed any time from the
+sheet's price history. Records copied from Redis after the fact carry
+`"backfilled": true` (2026-11-08 and the 2026-11-09 analysis); 2026-11-09 also has a
+one-off `headlines` record, a 7-day snapshot for every ticker.
+
+`data/` is gitignored and must be mounted, or the archive is skipped with a warning
+(a write inside the container would vanish with it). Add to the `worker.main` and
+`worker.main_news` `docker run` lines:
+```
+-v /path/to/stockBot_AI_Insight/data:/app/data
+```
+Size is roughly 30–100 KB a day. It lives on one disk only — back it up if it matters.
 
 ## Three analyses, not overlapping
 

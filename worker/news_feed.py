@@ -90,9 +90,9 @@ def _from_search(ticker: str) -> List[dict]:
     return items
 
 
-def fetch_headlines(ticker: str, since: datetime) -> List[Headline]:
+def fetch_headlines(ticker: str, since: datetime, limit: Optional[int] = MAX_PER_TICKER) -> List[Headline]:
     """Headlines published at or after `since`, newest first, at most
-    MAX_PER_TICKER. Raises only when both sources fail."""
+    `limit` (None: all). Raises only when both sources fail."""
     merged: Dict[str, dict] = {}
     errors = []
     for source in (_from_rss, _from_search):
@@ -114,7 +114,7 @@ def fetch_headlines(ticker: str, since: datetime) -> List[Headline]:
     for e in errors:
         log.warning("%s headline source failed: %s", ticker, e)
 
-    items = sorted(merged.values(), key=lambda i: i["published"], reverse=True)[:MAX_PER_TICKER]
+    items = sorted(merged.values(), key=lambda i: i["published"], reverse=True)[:limit]
     return [
         {
             "id": f"{ticker}-{n}",

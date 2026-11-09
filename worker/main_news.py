@@ -33,6 +33,7 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 from . import analytics as A
+from . import archive
 from . import redis_client as R
 from . import news_feed
 from . import quality as Q
@@ -102,6 +103,24 @@ def _fetch_all_headlines(candidates: List[NewsCandidate], since) -> Optional[Dic
             headlines[c["ticker"]] = []
             failed += 1
     return None if failed == len(candidates) else headlines
+
+
+def _other_headlines(all_data: A.AllData, candidates: List[NewsCandidate], now) -> Dict[str, List[dict]]:
+    """Headlines for the tickers the model wasn't asked about — for the
+    archive only, so it holds news for every ticker, not just the flagged
+    ones. Same window as the flagged tickers but uncapped; a failure leaves
+    the ticker out."""
+    flagged = {c["ticker"] for c in candidates}
+    since = news_feed.lookback_start(now, int(os.environ.get("NEWS_LOOKBACK_DAYS", "2")))
+    out: Dict[str, List[dict]] = {}
+    for ticker in all_data:
+        if ticker in flagged:
+            continue
+        try:
+            out[ticker] = news_feed.fetch_headlines(ticker, since, limit=None)
+        except RuntimeError as exc:
+            log.warning("archive: %s", exc)
+    return out
 
 
 def _attach_sources(news: dict, headlines: Dict[str, List[dict]]) -> dict:
@@ -176,6 +195,7 @@ def main() -> int:
     candidates = _collect_candidates(analysis, all_data, today)
     log.info("Collected %d news candidates: %s", len(candidates), [c["ticker"] for c in candidates])
     prompt = None
+    since, headlines = None, None
     if not candidates:
         log.info("No topPicks/riskWatch/signal-change tickers to search news for today.")
         result = {"generatedAt": today, "newsHighlights": []}
@@ -221,6 +241,14 @@ def main() -> int:
             usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
             usage.get("totalCostUsd", 0.0), time.monotonic() - start,
         )
+    archive.write("news", today, {
+        "since": since.isoformat(timespec="minutes") if since else None,
+        "candidates": candidates,
+        "headlines": headlines,
+        "otherHeadlines": _other_headlines(all_data, candidates, now),
+        "prompt": prompt,
+        "result": result,
+    })
 
     try:
         redis_conn.set(news_key, json.dumps(result), ex=R.CACHE_TTL_SECONDS)

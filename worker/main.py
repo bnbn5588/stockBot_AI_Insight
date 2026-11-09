@@ -20,6 +20,7 @@ import requests
 from dotenv import load_dotenv
 
 from . import analytics as A
+from . import archive
 from . import redis_client as R
 from . import quality as Q
 from .claude_cli import ANALYSIS_JSON_SCHEMA, ClaudeCLIError, model_name, run_checked
@@ -110,6 +111,12 @@ def main() -> int:
         usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
         usage.get("totalCostUsd", 0.0), time.monotonic() - start,
     )
+    archive.write("analysis", today, {
+        "dataDate": A.latest_data_date(all_data),
+        "input": archive.snapshot_rows(all_data),
+        "prompt": prompt,
+        "result": result,
+    })
 
     if redis_conn is not None:
         try:
