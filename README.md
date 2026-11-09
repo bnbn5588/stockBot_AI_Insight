@@ -405,8 +405,10 @@ steps and depends on both: reads `topPicks`/`riskWatch` from `ai-analysis:{date}
 search — pure synthesis over what the other two steps already produced
 (`claude_cli.get_final_recommendations`, no tool access, same speed profile as the
 signal-only step). `stance` is set by rule (`prompt_final.stances`): `favor` for a
-`topPick`, `caution` for a `riskWatch` ticker, flipped only when the news step rated the
-news `contradicts` + `high`. The model writes the reasons and summary; the code applies
+`topPick`, `caution` for a `riskWatch` ticker. A `favor` turns to `caution` when the news
+step rated the news `contradicts` + `high`; a `caution` never turns to `favor` — good news
+alone doesn't override a broken or unclear trend (one-way since 2026-11-10, after a single
+analyst upgrade flipped a fresh AMD SELL to `favor` on 2026-11-09). The model writes the reasons and summary; the code applies
 the rule's stance whatever it returns. (Until 2026-11-09 the model chose the stance, and
 two runs three minutes apart on identical input disagreed on 3 of 6 tickers.) Chained automatically at the end of `worker.main_news`, not on its own
 schedule (see "Final-synthesis step" above).
@@ -422,7 +424,7 @@ and stored as `qualityIssues` in the Redis result — the run is not failed for 
 | Step | Checks |
 |---|---|
 | analysis | topPicks/riskWatch are exactly the rule-selected tickers, in order; ADX / agree% / `$price` quoted in a ticker's reason match its row (ADX ±1.5, price ±2%; round ADX thresholds 20/25/40 are ignored); no win rate/expectancy cited for "too few to judge" tickers; earnings within 7 days mentioned; no forecast wording ("will rise", "guaranteed", price targets) |
-| news | tickers are from the flagged list, one entry each; `effect`/`materiality` from the allowed values (schema); every cited headline id exists for that ticker; no forecast wording |
+| news | tickers are from the flagged list, one entry each; `effect`/`materiality` from the allowed values (schema); "price target" is allowed here, since reporting an analyst's target change is news, not a forecast; every cited headline id exists for that ticker; no forecast wording |
 | final | exactly the flagged tickers, once each; each stance equals the rule's fixed stance; earnings within 7 days mentioned; no forecast wording |
 
 The checks catch mechanical errors only — they say nothing about whether the reasoning

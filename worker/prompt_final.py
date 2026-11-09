@@ -22,10 +22,12 @@ def _news_line(ticker: str, news_by_ticker: Dict[str, dict]) -> str:
 
 def stances(analysis: dict, news: dict) -> Dict[str, Tuple[str, str]]:
     """{ticker: (stance, why)} by rule: favor for a topPick, caution for a
-    riskWatch ticker (or one in both), flipped only when the news step rated
-    the news "contradicts" + "high". The model writes the reasons; it no
-    longer picks the stance — run to run it flipped stances on identical
-    input."""
+    riskWatch ticker (or one in both). A favor turns to caution when the news
+    step rated the news "contradicts" + "high"; a caution never turns to
+    favor — good news alone doesn't override a broken or unclear trend (since
+    2026-11-10: a single analyst upgrade had flipped a fresh SELL to favor).
+    The model writes the reasons; it doesn't pick the stance — run to run it
+    flipped stances on identical input."""
     news_by_ticker = {h["ticker"]: h for h in news.get("newsHighlights", [])}
     out: Dict[str, Tuple[str, str]] = {}
     for ticker, reasons in _quant_by_ticker(analysis).items():
@@ -33,9 +35,12 @@ def stances(analysis: dict, news: dict) -> Dict[str, Tuple[str, str]]:
         is_risk = any(r.startswith("[riskWatch]") for r in reasons)
         default = "favor" if is_pick and not is_risk else "caution"
         nh = news_by_ticker.get(ticker, {})
-        if nh.get("effect") == "contradicts" and nh.get("materiality") == "high":
-            flipped = "caution" if default == "favor" else "favor"
-            out[ticker] = (flipped, f"{default} by default, flipped by high-materiality contradicting news")
+        major_against = nh.get("effect") == "contradicts" and nh.get("materiality") == "high"
+        if default == "favor" and major_against:
+            out[ticker] = ("caution", "topPick, turned to caution by major news against the signal")
+        elif default == "caution" and major_against:
+            out[ticker] = ("caution", "riskWatch; major news goes against the signal, but good news "
+                                      "alone doesn't override the trend")
         else:
             out[ticker] = (default, "topPick" if default == "favor" else
                            "riskWatch" if not is_pick else "flagged as both topPick and riskWatch")
@@ -99,10 +104,12 @@ Rules:
 - Include every ticker listed above, exactly once each.
 - stance: copy the fixed stance shown for each ticker. "favor" = trend to follow, reasonable
   to hold or buy; "caution" = avoid, reduce or wait. The rule: favor for a topPick, caution for
-  a riskWatch ticker, flipped only by news rated contradicts + high.
-- When the stance was flipped by news, reason must say what the news was and why it outweighs
-  the quant read. When news contradicts but was rated low, say it was noted but not enough to
-  change the stance.
+  a riskWatch ticker; a topPick turns to caution on major news against it, while a riskWatch
+  ticker stays caution whatever the news.
+- When a topPick was turned to caution by news, reason must say what the news was and why it
+  outweighs the trend. When major news goes against a riskWatch ticker's signal, mention it as
+  a reason to watch, while the stance stays caution until the trend itself recovers. When news
+  contradicts but was rated low, say it was noted but not enough to change the stance.
 - reason must reference both the quant angle and the news angle (or explicitly note no
   news was found) — don't drop either source.
 - Describe trend and risk, not certainty: no "will rise", "guaranteed", or price targets. These signals

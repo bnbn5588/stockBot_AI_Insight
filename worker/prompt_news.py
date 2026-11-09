@@ -50,7 +50,8 @@ _EFFECT_RULES = """effect — what the news does to the flagged trend read:
 materiality — "high" only for news that changes the company's outlook: earnings or guidance,
 a rating change by a major firm, a large deal or contract won or lost, a regulatory or legal
 ruling, a management change, or a price move of 5% or more with a stated cause. Everything
-else is "low". The final stance flips only on contradicts + high, so use "high" sparingly."""
+else is "low". A top pick's final stance turns to caution only on contradicts + high, so use
+"high" sparingly."""
 
 _READ_RULES = """- recommendation must say whether the news makes the flagged trend read more or less
   trustworthy, referring to the flagged reason (trend, regime, directional movement, agree%,

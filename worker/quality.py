@@ -47,9 +47,15 @@ def _earnings_soon(row: A.Row, today: str) -> bool:
     return d is not None and 0 <= d <= EARNINGS_WARN_DAYS
 
 
-def _forecast_issues(where: str, text: str) -> List[str]:
+# The news step reports analyst actions, and "X raised its price target to $Y" is a fact
+# about the news there, not a forecast by the model.
+_REPORTED_TARGET_RE = re.compile(r"price\s+target|target\s+price", re.IGNORECASE)
+
+
+def _forecast_issues(where: str, text: str, allow_reported_targets: bool = False) -> List[str]:
     return [f'{where}: forecast/certainty wording "{m.group(0)}" — describe trend and risk instead'
-            for m in _FORECAST_RE.finditer(text or "")]
+            for m in _FORECAST_RE.finditer(text or "")
+            if not (allow_reported_targets and _REPORTED_TARGET_RE.fullmatch(m.group(0)))]
 
 
 def _figure_issues(where: str, text: str, row: A.Row) -> List[str]:
@@ -117,7 +123,8 @@ def check_news(result: dict, headlines: Dict[str, List[dict]]) -> List[str]:
             issues.append(f"{where}: headline ids {bad} are not among {t}'s headlines")
         if not ids:
             issues.append(f"{where}: no headlineIds — every entry must cite at least one headline")
-        issues += _forecast_issues(where, item.get("summary", "") + " " + item.get("recommendation", ""))
+        issues += _forecast_issues(where, item.get("summary", "") + " " + item.get("recommendation", ""),
+                                   allow_reported_targets=True)
     return issues
 
 
