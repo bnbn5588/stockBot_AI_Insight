@@ -376,7 +376,10 @@ counts when a headline ties it to the ticker.
 
 If no headline source is reachable for any ticker, the step falls back to the original
 behaviour — Claude web-searches itself (`claude_cli.get_news_highlights`, WebSearch/
-WebFetch only) — and the result is marked `newsSource: "web-search"`.
+WebFetch only) — and the result is marked `newsSource: "web-search"`. It rates
+`effect`/`materiality` the same way, so the final stance rule works on fallback days too
+(tested 2026-11-09 with the slimmed CLI flags: ~75s, ~$0.26–0.36 a run vs ~$0.10 for the
+headline path, and it tends to find fewer items).
 
 This keeps candidate selection deterministic (Python-computed from the already-cached
 analysis) rather than having the model re-guess which tickers matter, so the two layers

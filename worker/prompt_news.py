@@ -43,6 +43,15 @@ average, short-term trend and directional movement up); SELL = the trend is brok
 "exit / stay out" rather than a forecast of how far the price will fall; HOLD = long-term uptrend
 with a mixed short term. Their value is risk control, not predicting which stocks beat the market."""
 
+_EFFECT_RULES = """effect — what the news does to the flagged trend read:
+- "reinforces": points the same way as the signal (bad news on a SELL, good news on a BUY)
+- "tempers": mixed, or relevant but not pointing clearly either way
+- "contradicts": points against the signal (strong good news on a SELL, bad news on a BUY)
+materiality — "high" only for news that changes the company's outlook: earnings or guidance,
+a rating change by a major firm, a large deal or contract won or lost, a regulatory or legal
+ruling, a management change, or a price move of 5% or more with a stated cause. Everything
+else is "low". The final stance flips only on contradicts + high, so use "high" sparingly."""
+
 _READ_RULES = """- recommendation must say whether the news makes the flagged trend read more or less
   trustworthy, referring to the flagged reason (trend, regime, directional movement, agree%,
   streak). Do not invent new quantitative figures — only the reason text and the news are
@@ -85,14 +94,7 @@ Respond with newsHighlights: at most one entry per ticker, each with ticker, hea
 ids of the headlines it is based on), summary (one or two sentences on what happened), effect,
 materiality and recommendation.
 
-effect — what the news does to the flagged trend read:
-- "reinforces": points the same way as the signal (bad news on a SELL, good news on a BUY)
-- "tempers": mixed, or relevant but not pointing clearly either way
-- "contradicts": points against the signal (strong good news on a SELL, bad news on a BUY)
-materiality — "high" only for news that changes the company's outlook: earnings or guidance,
-a rating change by a major firm, a large deal or contract won or lost, a regulatory or legal
-ruling, a management change, or a price move of 5% or more with a stated cause. Everything
-else is "low". The final stance flips only on contradicts + high, so use "high" sparingly.
+{_EFFECT_RULES}
 
 Rules:
 - Use only the headlines listed above, cited by their ids. Do not add facts that are not in
@@ -131,8 +133,10 @@ commentary.
 Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
 {{
   "generatedAt": "{today}",
-  "newsHighlights": [{{"ticker": "TICK", "summary": "one sentence on what happened", "source": "publisher name", "publishedDate": "YYYY-MM-DD", "recommendation": "one sentence on whether this news reinforces, tempers, or contradicts the flagged signal, and why"}}]
+  "newsHighlights": [{{"ticker": "TICK", "summary": "one sentence on what happened", "source": "publisher name", "publishedDate": "YYYY-MM-DD", "effect": "reinforces | tempers | contradicts", "materiality": "high | low", "recommendation": "one sentence on whether this news reinforces, tempers, or contradicts the flagged signal, and why"}}]
 }}
+
+{_EFFECT_RULES}
 
 Rules:
 - Only include tickers from the flagged list above — do not search for or add others.

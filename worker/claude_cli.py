@@ -75,9 +75,11 @@ _NEWS_HIGHLIGHT_ITEM_SCHEMA = {
         "summary": {"type": "string"},
         "source": {"type": "string"},
         "publishedDate": {"type": "string"},
+        "effect": {"type": "string", "enum": ["reinforces", "tempers", "contradicts"]},
+        "materiality": {"type": "string", "enum": ["high", "low"]},
         "recommendation": {"type": "string"},
     },
-    "required": ["ticker", "summary", "source", "publishedDate", "recommendation"],
+    "required": ["ticker", "summary", "source", "publishedDate", "effect", "materiality", "recommendation"],
 }
 
 NEWS_ONLY_JSON_SCHEMA: Dict[str, Any] = {
