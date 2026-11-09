@@ -15,6 +15,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from typing import List
 
 import requests
 from dotenv import load_dotenv
@@ -23,6 +24,7 @@ from . import analytics as A
 from . import archive
 from . import redis_client as R
 from . import quality as Q
+from . import selection
 from .claude_cli import ANALYSIS_JSON_SCHEMA, ClaudeCLIError, model_name, run_checked
 from .line_broadcast import notify_failure
 from .logging_setup import get_logger
@@ -41,14 +43,27 @@ def fetch_sheet_csv(sheet_id: str) -> str:
     return res.text
 
 
+def _enforce_selection(analysis: dict, field: str, picks: List[selection.Pick]) -> List[dict]:
+    """The rule-selected tickers, in order, whatever the model returned —
+    its reason where it gave one, else the rule hits as the reason."""
+    by_ticker = {i.get("ticker"): i.get("reason", "") for i in analysis.get(field, [])}
+    return [{"ticker": p.ticker, "reason": by_ticker.get(p.ticker) or "; ".join(p.why).capitalize() + "."}
+            for p in picks]
+
+
 def generate_analysis(all_data: A.AllData, today: str) -> tuple[dict, str]:
-    prompt = build_prompt(all_data, today)
+    picks, risks = selection.select(all_data, today)
+    prompt = build_prompt(all_data, today, picks, risks)
     analysis, usage, issues = run_checked(
         prompt, ANALYSIS_JSON_SCHEMA,
-        check=lambda r: Q.check_analysis(r, all_data, today, MIN_TRADES_FOR_STATS),
+        check=lambda r: Q.check_analysis(r, all_data, today, MIN_TRADES_FOR_STATS,
+                                         [p.ticker for p in picks], [p.ticker for p in risks]),
     )
+    analysis["topPicks"] = _enforce_selection(analysis, "topPicks", picks)
+    analysis["riskWatch"] = _enforce_selection(analysis, "riskWatch", risks)
     result = {
         **analysis,
+        "selection": {"topPicks": [vars(p) for p in picks], "riskWatch": [vars(p) for p in risks]},
         "qualityIssues": issues,
         "model": model_name(),
         "fetchedAt": datetime.now(timezone.utc).isoformat(),

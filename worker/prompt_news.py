@@ -82,8 +82,17 @@ Flagged tickers and their headlines from the last {window} (newest first, each w
 {body}
 
 Respond with newsHighlights: at most one entry per ticker, each with ticker, headlineIds (the
-ids of the headlines it is based on), summary (one or two sentences on what happened) and
-recommendation.
+ids of the headlines it is based on), summary (one or two sentences on what happened), effect,
+materiality and recommendation.
+
+effect — what the news does to the flagged trend read:
+- "reinforces": points the same way as the signal (bad news on a SELL, good news on a BUY)
+- "tempers": mixed, or relevant but not pointing clearly either way
+- "contradicts": points against the signal (strong good news on a SELL, bad news on a BUY)
+materiality — "high" only for news that changes the company's outlook: earnings or guidance,
+a rating change by a major firm, a large deal or contract won or lost, a regulatory or legal
+ruling, a management change, or a price move of 5% or more with a stated cause. Everything
+else is "low". The final stance flips only on contradicts + high, so use "high" sparingly.
 
 Rules:
 - Use only the headlines listed above, cited by their ids. Do not add facts that are not in
@@ -91,6 +100,8 @@ Rules:
 - Keep news that is specifically about the company and could move the stock: earnings,
   guidance, analyst rating or target changes, deals, products, regulatory or legal events,
   management changes, large price moves with a stated cause.
+- News about the whole sector or market (e.g. a chip-stock selloff) counts when a headline
+  ties it to this ticker; say it is sector-wide in summary.
 - Skip opinion and listicle pieces ("Is X a buy?", "X vs Y", "stocks to watch"), articles
   that only mention the ticker in passing, and option-chain or quote pages.
 - If none of a ticker's headlines qualify, leave the ticker out. Return an empty

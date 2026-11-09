@@ -70,29 +70,23 @@ def _figure_issues(where: str, text: str, row: A.Row) -> List[str]:
     return issues
 
 
-def check_analysis(result: dict, all_data: A.AllData, today: str, min_trades: int) -> List[str]:
+def check_analysis(result: dict, all_data: A.AllData, today: str, min_trades: int,
+                   picks: List[str], risks: List[str]) -> List[str]:
+    """picks/risks: the tickers selection.select fixed for each list."""
     issues: List[str] = []
-    buys = [t for t, rows in all_data.items() if rows[-1].signal == "BUY"]
-    for field in ("topPicks", "riskWatch"):
+    for field, expected in (("topPicks", picks), ("riskWatch", risks)):
         items = result.get(field, [])
-        if len(items) > 3:
-            issues.append(f"{field}: {len(items)} entries, the rules allow at most 3")
-        if not items and (field == "riskWatch" or buys):
-            issues.append(f"{field}: empty, the rules ask for 1-3 entries")
-        seen = set()
+        got = [i.get("ticker", "") for i in items]
+        if got != expected:
+            issues.append(f"{field}: tickers {got} must be exactly {expected}, in that order")
         for item in items:
             t, reason = item.get("ticker", ""), item.get("reason", "")
             where = f"{field} {t}"
-            if t in seen:
-                issues.append(f"{where}: listed twice")
-            seen.add(t)
             rows = all_data.get(t)
             if not rows:
                 issues.append(f"{where}: ticker is not in the snapshot")
                 continue
             row = rows[-1]
-            if field == "topPicks" and row.signal != "BUY":
-                issues.append(f"{where}: topPicks must be BUY tickers, its signal is {row.signal}")
             issues += _figure_issues(where, reason, row)
             if A.trade_stats(rows).total_trades < min_trades and _TRADE_STATS_RE.search(reason):
                 issues.append(f"{where}: cites win rate/expectancy, but it is marked too few to judge")
@@ -127,29 +121,22 @@ def check_news(result: dict, headlines: Dict[str, List[dict]]) -> List[str]:
     return issues
 
 
-def check_final(result: dict, analysis: dict, tickers: Iterable[str], news: dict,
+def check_final(result: dict, tickers: Iterable[str], fixed: Dict[str, str],
                 all_data: A.AllData, today: str) -> List[str]:
+    """fixed: {ticker: stance} from prompt_final.stances."""
     issues: List[str] = []
     expected = list(tickers)
     got = [r.get("ticker") for r in result.get("recommendations", [])]
     if sorted(got) != sorted(expected):
         issues.append(f"recommendations: tickers {got} must be exactly {expected}, once each")
-    picks = {i["ticker"] for i in analysis.get("topPicks", [])}
-    risks = {i["ticker"] for i in analysis.get("riskWatch", [])}
-    with_news = {h["ticker"] for h in news.get("newsHighlights", [])}
     for r in result.get("recommendations", []):
         t, stance, reason = r.get("ticker"), r.get("stance"), r.get("reason", "")
         where = f"recommendations {t}"
-        default = ("favor" if t in picks and t not in risks
-                   else "caution" if t in risks and t not in picks else None)
-        if default and stance != default and t not in with_news:
-            issues.append(f"{where}: stance {stance} flips the {default} default without any news to justify it")
+        if t in fixed and stance != fixed[t]:
+            issues.append(f"{where}: stance {stance} must be the fixed stance {fixed[t]}")
         rows = all_data.get(t)
-        if rows:
-            if stance == "favor" and rows[-1].signal == "SELL" and t not in with_news:
-                issues.append(f"{where}: favor on a SELL signal with no news — agreeing with a SELL means caution")
-            if _earnings_soon(rows[-1], today) and not _EARNINGS_RE.search(reason):
-                issues.append(f"{where}: earnings in {earnings_days(rows[-1], today)} days is not mentioned")
+        if rows and _earnings_soon(rows[-1], today) and not _EARNINGS_RE.search(reason):
+            issues.append(f"{where}: earnings in {earnings_days(rows[-1], today)} days is not mentioned")
         issues += _forecast_issues(where, reason)
     issues += _forecast_issues("summary", result.get("summary", ""))
     return issues

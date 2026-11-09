@@ -16,6 +16,8 @@ Per ticker, the history-sheet rows parsed by `analytics.parse_csv`:
 - `snapshot_lines` — one line per ticker (format below)
 - `fwd_line` — historical avg next-trading-day return per signal type
 - `today` — ISO date string
+- `picks` / `risks` — the tickers `selection.select` fixed for topPicks/riskWatch, each with
+  its rule hits (see README "Three analyses")
 
 ## Prompt template
 
@@ -46,16 +48,29 @@ Current snapshot (ticker | signal | price | streak | period_return | agree% | AD
 Signal effectiveness — avg next-trading-day % return across all historical data:
 {fwd_line}
 
+The tickers below were already selected by fixed rules from the snapshot above (the rule
+hits are shown after each). Do not add, drop or reorder them — your job is to explain them.
+
+topPicks (BUY tickers in an uptrend; "clean" = regime=UP, +DI at least 5 above -DI, ADX >= 20,
+agree >= 60; "weak" falls short of one of those, as listed):
+  - {TICK}: {rule hits}                 (or "(none — ...)")
+
+riskWatch (broken, weakening or unreliable trends, earnings soon):
+  - {TICK}: {rule hits}
+
 Respond with ONLY this JSON object (no markdown fences, no text outside the JSON):
 { "generatedAt": ..., "marketSummary": ..., "topPicks": [...], "riskWatch": [...], "portfolioNote": ... }
 
 Rules:
-- topPicks: 1–3 BUY tickers with the cleanest uptrend (regime=UP, +DI well above -DI, high agree%, ADX >= 20,
-  a BUY streak that has held). These are trends to follow, not forecasts of outperformance.
-- riskWatch: 1–3 tickers where the trend is broken or weakening (fresh SELL, regime=DOWN, -DI above +DI),
-  or where the signal looks unreliable (low agree% with weak ADX, frequent recent flips).
+- topPicks and riskWatch: exactly the tickers listed above, in that order, one reason each.
+  An empty list above means an empty array.
+- A "weak" topPick's reason must say what it falls short on (e.g. ADX below 20 = weak trend
+  strength). These are trends to follow, not forecasts of outperformance.
+- A riskWatch reason should explain the rule hits with the ticker's figures (streak, regime,
+  DI, agree%, ADX).
+- If tickers that share a theme (e.g. several semiconductor names) are all SELL, say so in
+  marketSummary or portfolioNote as one theme rather than as separate risks.
 - Ignore win rate / expectancy for tickers marked "too few to judge" — never cite them as evidence.
-- Highlight tickers that just changed signal today.
 - If a ticker you mention has earn=in Nd with N <= 7, say so in its reason (the trend read carries
   event risk until the report is out). Do not treat an upcoming report as bullish or bearish by itself.
 - Be specific (ticker names, streak lengths, agree%, ADX, DI, % figures) and avoid overconfident language
@@ -94,9 +109,12 @@ NVDA  | SELL | $  186.64 | streak=SELL×8d | period=+1.9%   | agree= 60 | adx= 2
 
 ## Call
 
-`claude -p --output-format json --model $CLAUDE_MODEL --tools "" --json-schema <ANALYSIS_JSON_SCHEMA>`
+`claude -p --output-format json --model $CLAUDE_MODEL --tools "" --json-schema <ANALYSIS_JSON_SCHEMA>
+--system-prompt <SYSTEM_PROMPT> --strict-mcp-config --disable-slash-commands --setting-sources ""`
 (model default `claude-sonnet-5-5`), prompt piped via stdin, run from an empty temp directory
-(see `claude_cli.py` docstring for why). The response is then checked by
+(see `claude_cli.py` docstring for why). The last four flags replace Claude Code's own
+system prompt and skip MCP connectors, skills and settings — about 20k input tokens a call
+that don't apply here (24.8k → 5.2k measured 2026-11-09). The response is then checked by
 `quality.check_analysis`; on any issue the prompt is re-sent once with the previous answer and
 the list of problems appended (`claude_cli.run_checked`), and leftovers are stored as
 `qualityIssues`. The

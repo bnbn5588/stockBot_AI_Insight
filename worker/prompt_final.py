@@ -8,14 +8,38 @@ just resolves them into one bottom-line stance.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 def _news_line(ticker: str, news_by_ticker: Dict[str, dict]) -> str:
     nh = news_by_ticker.get(ticker)
     if not nh:
         return "news: no relevant recent news found"
-    return f"news: {nh['summary']} (source: {nh['source']}, {nh['publishedDate']}) — read: {nh['recommendation']}"
+    effect = f" [{nh['effect']}, {nh['materiality']}]" if nh.get("effect") else ""
+    return (f"news{effect}: {nh['summary']} (source: {nh['source']}, {nh['publishedDate']}) "
+            f"— read: {nh['recommendation']}")
+
+
+def stances(analysis: dict, news: dict) -> Dict[str, Tuple[str, str]]:
+    """{ticker: (stance, why)} by rule: favor for a topPick, caution for a
+    riskWatch ticker (or one in both), flipped only when the news step rated
+    the news "contradicts" + "high". The model writes the reasons; it no
+    longer picks the stance — run to run it flipped stances on identical
+    input."""
+    news_by_ticker = {h["ticker"]: h for h in news.get("newsHighlights", [])}
+    out: Dict[str, Tuple[str, str]] = {}
+    for ticker, reasons in _quant_by_ticker(analysis).items():
+        is_pick = any(r.startswith("[topPick]") for r in reasons)
+        is_risk = any(r.startswith("[riskWatch]") for r in reasons)
+        default = "favor" if is_pick and not is_risk else "caution"
+        nh = news_by_ticker.get(ticker, {})
+        if nh.get("effect") == "contradicts" and nh.get("materiality") == "high":
+            flipped = "caution" if default == "favor" else "favor"
+            out[ticker] = (flipped, f"{default} by default, flipped by high-materiality contradicting news")
+        else:
+            out[ticker] = (default, "topPick" if default == "favor" else
+                           "riskWatch" if not is_pick else "flagged as both topPick and riskWatch")
+    return out
 
 
 def _quant_by_ticker(analysis: dict) -> Dict[str, List[str]]:
@@ -42,8 +66,10 @@ def build_final_prompt(analysis: dict, news: dict, today: str) -> str:
     news_by_ticker: Dict[str, dict] = {h["ticker"]: h for h in news.get("newsHighlights", [])}
     quant_by_ticker = _quant_by_ticker(analysis)
 
+    fixed = stances(analysis, news)
     lines: List[str] = [
-        f"- {ticker}: {' '.join(reasons)} | {_news_line(ticker, news_by_ticker)}"
+        f"- {ticker} — stance: {fixed[ticker][0]} ({fixed[ticker][1]}): {' '.join(reasons)} | "
+        f"{_news_line(ticker, news_by_ticker)}"
         for ticker, reasons in quant_by_ticker.items()
     ]
     tickers_block = "\n".join(lines)
@@ -52,9 +78,9 @@ def build_final_prompt(analysis: dict, news: dict, today: str) -> str:
 1) A data-driven analysis of algorithmic trading signals (quant reasoning below, already final).
 2) A news check on the tickers that analysis flagged (news findings below, where found).
 
-Your only job is to reconcile these two into one final stance per ticker below. Do not
-recompute the quant numbers, do not search for new information, and do not add tickers
-not listed below — use only what's provided.
+Your job is to explain one final stance per ticker below. The stance is already fixed by
+rule (shown after each ticker) — do not change it. Do not recompute the quant numbers, do not
+search for new information, and do not add tickers not listed below — use only what's provided.
 
 Quant portfolio note: {analysis.get('portfolioNote', '')}
 
@@ -63,23 +89,20 @@ Flagged tickers:
 
 Your response fields (the output schema enforces the exact structure):
 - generatedAt: "{today}"
-- recommendations: one entry per flagged ticker, each with ticker, stance ("favor" or
-  "caution"), and reason (one sentence combining the quant signal and the news finding).
+- recommendations: one entry per flagged ticker, each with ticker, stance (the fixed one),
+  and reason (one sentence combining the quant signal and the news finding).
   This is its own top-level field — never put recommendation data inside summary.
 - summary: a plain-prose 2-3 sentence final takeaway synthesizing both the quant picture
   and the news read. No JSON, brackets, or per-ticker lists in it.
 
 Rules:
 - Include every ticker listed above, exactly once each.
-- stance is your view of the STOCK for a holder or buyer — never of the signal or of how
-  much to trust it. "favor" = bullish: positive outlook, reasonable to hold or buy.
-  "caution" = bearish or unclear: avoid, reduce, or wait. Followers see favor in green
-  and caution in orange, so a ticker you expect to fall must be "caution" even when you
-  are confident in its SELL signal (agreeing with a SELL means "caution", not "favor").
-- stance defaults to "favor" for a topPick and "caution" for a riskWatch ticker; if a
-  ticker is flagged as both (a contradiction), weigh both quant angles plus the news to
-  decide. Flip the default only when the news read materially changes the picture, and
-  say why in reason.
+- stance: copy the fixed stance shown for each ticker. "favor" = trend to follow, reasonable
+  to hold or buy; "caution" = avoid, reduce or wait. The rule: favor for a topPick, caution for
+  a riskWatch ticker, flipped only by news rated contradicts + high.
+- When the stance was flipped by news, reason must say what the news was and why it outweighs
+  the quant read. When news contradicts but was rated low, say it was noted but not enough to
+  change the stance.
 - reason must reference both the quant angle and the news angle (or explicitly note no
   news was found) — don't drop either source.
 - Describe trend and risk, not certainty: no "will rise", "guaranteed", or price targets. These signals

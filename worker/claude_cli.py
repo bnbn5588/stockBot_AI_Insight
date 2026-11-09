@@ -103,9 +103,11 @@ NEWS_FROM_HEADLINES_JSON_SCHEMA: Dict[str, Any] = {
                     "ticker": {"type": "string"},
                     "headlineIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "summary": {"type": "string", "minLength": 20},
+                    "effect": {"type": "string", "enum": ["reinforces", "tempers", "contradicts"]},
+                    "materiality": {"type": "string", "enum": ["high", "low"]},
                     "recommendation": {"type": "string", "minLength": 20},
                 },
-                "required": ["ticker", "headlineIds", "summary", "recommendation"],
+                "required": ["ticker", "headlineIds", "summary", "effect", "materiality", "recommendation"],
                 "additionalProperties": False,
             },
         },
@@ -160,6 +162,10 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 class ClaudeCLIError(RuntimeError):
     pass
+
+
+SYSTEM_PROMPT = ("You analyse algorithmic stock-trading signals and related news. Follow the user's "
+                 "rules exactly, use only the data provided, and answer in the requested JSON structure.")
 
 
 def model_name() -> str:
@@ -245,6 +251,14 @@ def _run_cli_once(
         "--model", model_name(),
         "--tools", tools,
         "--json-schema", json.dumps(schema),
+        # Replace Claude Code's own coding-agent system prompt and skip the
+        # account's MCP connectors, skills and settings: none apply here, and
+        # together they were ~20k of the ~25k input tokens on every call
+        # (measured 2026-11-09: 24.8k -> 5.2k, structured output unchanged).
+        "--system-prompt", SYSTEM_PROMPT,
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--setting-sources", "",
     ]
     if bypass_permissions:
         # Safe here only because `tools` is restricted to non-destructive

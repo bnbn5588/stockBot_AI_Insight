@@ -1,7 +1,7 @@
 """Daily disk-space check for the host this worker runs on. Pushes a LINE
 message to the admin (LINE_ADMIN_USER_ID only — never broadcast) when the
 disk holding the mounted log/ directory is at or above DISK_WARN_PERCENT
-(default 85). Reads usage through the log mount, so it measures the host's
+(default 90). Reads usage through the log mount, so it measures the host's
 filesystem, not the container's. Run daily from cron:
     python -m worker.disk_check
 """
@@ -23,7 +23,7 @@ CHECK_PATH = os.environ.get("LOG_DIR", "/app/log")
 
 
 def main() -> int:
-    warn = float(os.environ.get("DISK_WARN_PERCENT", "85"))
+    warn = float(os.environ.get("DISK_WARN_PERCENT", "90"))
     usage = shutil.disk_usage(CHECK_PATH)
     pct = usage.used / usage.total * 100
     free_gb = usage.free / 1024**3

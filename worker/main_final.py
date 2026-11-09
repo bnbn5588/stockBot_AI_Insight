@@ -38,7 +38,7 @@ from .claude_cli import ClaudeCLIError, final_json_schema, model_name, run_check
 from .line_broadcast import LineBroadcastError, broadcast, notify_failure
 from .logging_setup import get_logger
 from .main import fetch_sheet_csv
-from .prompt_final import build_final_prompt, candidate_tickers
+from .prompt_final import build_final_prompt, candidate_tickers, stances
 
 load_dotenv()
 
@@ -103,15 +103,20 @@ def main() -> int:
         except Exception:
             log.warning("Sheet unavailable — final checks run without signal data", exc_info=True)
             all_data = {}
+        fixed = {t: s for t, (s, _) in stances(analysis, news).items()}
         try:
             final, usage, issues = run_checked(
                 prompt, final_json_schema(len(tickers)),
-                check=lambda r: Q.check_final(r, analysis, tickers, news, all_data, today),
+                check=lambda r: Q.check_final(r, tickers, fixed, all_data, today),
             )
         except ClaudeCLIError as exc:
             log.error("Claude CLI error", exc_info=True)
             notify_failure("worker.main_final", f"Claude CLI error: {exc}")
             return 1
+        # The rule decides the stance even if the model still disagrees.
+        for r in final.get("recommendations", []):
+            if r.get("ticker") in fixed:
+                r["stance"] = fixed[r["ticker"]]
 
     result = {
         **final,

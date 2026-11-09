@@ -27,14 +27,16 @@ worker/
   claude_cli.py      Shells out to the `claude` CLI instead of the Anthropic SDK.
                      Pins the model (--model) and runs the check-and-correct
                      round (run_checked).
-  quality.py         Checks each response against the input data (tickers,
-                     BUY-only topPicks, quoted ADX/agree%/price, forecast wording,
-                     earnings mentions, stance flips) — see "Quality checks".
+  selection.py       Picks topPicks/riskWatch by rule (the model only explains
+                     them) — see "Three analyses".
+  quality.py         Checks each response against the input data (rule-selected
+                     tickers, quoted ADX/agree%/price, forecast wording, earnings
+                     mentions, fixed stances) — see "Quality checks".
   news_feed.py       Fetches recent Yahoo Finance headlines per ticker (RSS +
                      search endpoint, no key) with stable ids for the news step.
   redis_client.py    Redis key names + TTL.
   disk_check.py      Daily host disk check — LINE push to the admin only when
-                     usage reaches DISK_WARN_PERCENT (default 85).
+                     usage reaches DISK_WARN_PERCENT (default 90).
   archive.py         Permanent per-day JSONL record of every step (inputs,
                      prompt, answer, headlines) — see "Run archive".
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
@@ -293,9 +295,9 @@ bleeds into the next trading day.
 
 | Key                              | Written by      | Contents                                                              |
 |------------------------------------|-----------------|-------------------------------------------------------------------------|
-| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
+| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `selection` (the rule hits per selected ticker), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
 | `ai-analysis-prompt:{date}`       | `main.py`       | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
-| `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each `ticker`, `summary`, `source`, `publishedDate`, `recommendation`, and `headlines` — the cited articles' `title`/`publisher`/`published`/`url`), `newsSource` (`yahoo-headlines` or `web-search` fallback), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
+| `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each `ticker`, `summary`, `effect`, `materiality`, `source`, `publishedDate`, `recommendation`, and `headlines` — the cited articles' `title`/`publisher`/`published`/`url`), `newsSource` (`yahoo-headlines` or `web-search` fallback), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
 | `ai-analysis-news-prompt:{date}`  | `main_news.py`  | The news-only prompt string, stored on its own key. |
 | `ai-analysis-final:{date}`        | `main_final.py` | `generatedAt`, `summary`, `recommendations` (each `ticker`/`stance`/`reason`), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-final-prompt:{date}` instead. |
 | `ai-analysis-final-prompt:{date}` | `main_final.py` | The final-synthesis prompt string, stored on its own key. |
@@ -332,7 +334,7 @@ one-off `headlines` record, a 7-day snapshot for every ticker.
 ```
 Size is roughly 30–100 KB a day. It lives on one disk only — back it up if it matters.
 `worker.disk_check` (cron, daily 02:30 UTC, `log/` mounted) pushes a LINE message to
-`LINE_ADMIN_USER_ID` when the host disk reaches `DISK_WARN_PERCENT` (default 85%).
+`LINE_ADMIN_USER_ID` when the host disk reaches `DISK_WARN_PERCENT` (default 90%).
 
 ## Three analyses, not overlapping
 
@@ -345,6 +347,16 @@ not invent data not present above"). No tool access at all (`claude_cli.get_anal
 — fast, no external dependencies beyond the sheet. Produces `topPicks`/`riskWatch` —
 the single source of truth for which tickers matter today and why.
 
+Which tickers go in `topPicks`/`riskWatch` is decided by rule in `selection.py`, not by
+the model (since 2026-11-09 — left to choose, it picked different tickers from the same
+data on different runs). topPicks: BUY tickers with regime=UP and +DI above -DI, at most
+3, "clean" ones (+DI at least 5 above -DI, ADX ≥ 20, agree ≥ 60) before "weak" ones; can
+be empty. riskWatch: the 3 highest-scoring other tickers (signal changed today +3, fresh
+SELL ≤ 5 sessions +2, earnings ≤ 7 days +2, regime=DOWN with -DI above +DI +1, agree ≤ 20
+with ADX < 20 +1, 3+ flips in 10 sessions +1). The prompt lists them with the rule hits;
+the model writes the reasons, `marketSummary` and `portfolioNote`, and the code keeps the
+rule's tickers and order whatever it returns. The rule hits are stored as `selection`.
+
 **News-only (`prompt_news.py`, `main_news.py`).** Runs *after* the
 signal-only analysis and depends on its output: reads `topPicks` + `riskWatch` +
 any signal-change ticker from the cached `ai-analysis:{date}`. For exactly those
@@ -356,7 +368,11 @@ deals, legal/regulatory, management), skips opinion/listicle pieces, and cites t
 headlines it used by id. The code then fills `source`/`publishedDate`/`headlines` from
 the fetched data, so a source, date or link can't be invented, and nothing older than
 the window can appear. `recommendation` says whether the news makes the flagged trend
-read more or less trustworthy — not a standalone buy/sell call.
+read more or less trustworthy — not a standalone buy/sell call. Each entry is also rated
+`effect` (`reinforces` / `tempers` / `contradicts` the signal) and `materiality` (`high`
+only for earnings/guidance, major rating changes, large deals, legal/regulatory rulings,
+management changes or a 5%+ move with a stated cause; otherwise `low`). Sector-wide news
+counts when a headline ties it to the ticker.
 
 If no headline source is reachable for any ticker, the step falls back to the original
 behaviour — Claude web-searches itself (`claude_cli.get_news_highlights`, WebSearch/
@@ -375,12 +391,11 @@ steps and depends on both: reads `topPicks`/`riskWatch` from `ai-analysis:{date}
 `favor`/`caution` `stance` per ticker plus an overall `summary`. No new data, no
 search — pure synthesis over what the other two steps already produced
 (`claude_cli.get_final_recommendations`, no tool access, same speed profile as the
-signal-only step). `stance` defaults to what the quant step already implied (`favor`
-for a `topPick`, `caution` for `riskWatch`) but the model can flip it if the news
-materially contradicts the quant signal — in testing this actually happened: a
-same-day NVDA SELL got flipped to `favor` after a fresh earnings beat + ~7.4% rally
-directly contradicted it, while a no-news ticker correctly stayed at its quant-implied
-`caution`. Chained automatically at the end of `worker.main_news`, not on its own
+signal-only step). `stance` is set by rule (`prompt_final.stances`): `favor` for a
+`topPick`, `caution` for a `riskWatch` ticker, flipped only when the news step rated the
+news `contradicts` + `high`. The model writes the reasons and summary; the code applies
+the rule's stance whatever it returns. (Until 2026-11-09 the model chose the stance, and
+two runs three minutes apart on identical input disagreed on 3 of 6 tickers.) Chained automatically at the end of `worker.main_news`, not on its own
 schedule (see "Final-synthesis step" above).
 
 ## Quality checks
@@ -393,9 +408,9 @@ and stored as `qualityIssues` in the Redis result — the run is not failed for 
 
 | Step | Checks |
 |---|---|
-| analysis | tickers exist in the snapshot; topPicks are BUY; 1–3 entries each; ADX / agree% / `$price` quoted in a ticker's reason match its row (ADX ±1.5, price ±2%; round ADX thresholds 20/25/40 are ignored); no win rate/expectancy cited for "too few to judge" tickers; earnings within 7 days mentioned; no forecast wording ("will rise", "guaranteed", price targets) |
-| news | tickers are from the flagged list, one entry each; every cited headline id exists for that ticker; no forecast wording |
-| final | exactly the flagged tickers, once each; a stance that flips the quant default (favor for topPick, caution for riskWatch) needs news for that ticker; `favor` on a SELL needs news; earnings within 7 days mentioned; no forecast wording |
+| analysis | topPicks/riskWatch are exactly the rule-selected tickers, in order; ADX / agree% / `$price` quoted in a ticker's reason match its row (ADX ±1.5, price ±2%; round ADX thresholds 20/25/40 are ignored); no win rate/expectancy cited for "too few to judge" tickers; earnings within 7 days mentioned; no forecast wording ("will rise", "guaranteed", price targets) |
+| news | tickers are from the flagged list, one entry each; `effect`/`materiality` from the allowed values (schema); every cited headline id exists for that ticker; no forecast wording |
+| final | exactly the flagged tickers, once each; each stance equals the rule's fixed stance; earnings within 7 days mentioned; no forecast wording |
 
 The checks catch mechanical errors only — they say nothing about whether the reasoning
 is good.
@@ -718,6 +733,14 @@ if the CLI version changes.
    about 1ms apart, sharing the same mounted `~/.claude` session directory — every prior
    *successful* test of this chain had some natural gap between calls. Unconfirmed as
    the actual cause, but cheap enough to add as a precaution regardless.
+9. **Replace the default system prompt and skip connectors/skills/settings.** On every
+   call Claude Code otherwise sends its own coding-agent system prompt plus the account's
+   MCP connectors (claude.ai Drive/Docs etc. via the mounted `~/.claude.json`) and skills
+   — about 20k input tokens unrelated to this task. `--system-prompt <SYSTEM_PROMPT>
+   --strict-mcp-config --disable-slash-commands --setting-sources ""` cut a call from
+   24.8k to 5.2k input tokens ($0.11 → $0.03 for the analysis step) with structured output
+   unchanged (verified 2026-11-09 on v2.1.241). `--system-prompt` alone only got to 16.3k
+   — the connectors were most of the rest. Auth still comes from the mounted credentials.
 
 ## Known gaps / follow-ups
 

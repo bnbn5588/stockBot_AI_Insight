@@ -138,6 +138,8 @@ def _attach_sources(news: dict, headlines: Dict[str, List[dict]]) -> dict:
         out.append({
             "ticker": item["ticker"],
             "summary": item["summary"],
+            "effect": item.get("effect", "tempers"),
+            "materiality": item.get("materiality", "low"),
             "source": newest["publisher"] or "Yahoo Finance",
             "publishedDate": newest["published"][:10],
             "recommendation": item["recommendation"],
