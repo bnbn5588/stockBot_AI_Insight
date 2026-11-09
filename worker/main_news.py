@@ -37,6 +37,7 @@ from . import archive
 from . import redis_client as R
 from . import news_feed
 from . import quality as Q
+from . import translate
 from .claude_cli import (NEWS_FROM_HEADLINES_JSON_SCHEMA, ClaudeCLIError, get_news_highlights,
                          model_name, run_checked)
 from .line_broadcast import notify_failure
@@ -243,6 +244,10 @@ def main() -> int:
             usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
             usage.get("totalCostUsd", 0.0), time.monotonic() - start,
         )
+    if result.get("newsHighlights"):
+        th = translate.news_th(result)
+        if th:
+            result["th"] = th
     archive.write("news", today, {
         "since": since.isoformat(timespec="minutes") if since else None,
         "candidates": candidates,

@@ -25,6 +25,7 @@ from . import archive
 from . import redis_client as R
 from . import quality as Q
 from . import selection
+from . import translate
 from .claude_cli import ANALYSIS_JSON_SCHEMA, ClaudeCLIError, model_name, run_checked
 from .line_broadcast import notify_failure
 from .logging_setup import get_logger
@@ -126,6 +127,9 @@ def main() -> int:
         usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
         usage.get("totalCostUsd", 0.0), time.monotonic() - start,
     )
+    th = translate.analysis_th(result)
+    if th:
+        result["th"] = th
     archive.write("analysis", today, {
         "dataDate": A.latest_data_date(all_data),
         "input": archive.snapshot_rows(all_data),

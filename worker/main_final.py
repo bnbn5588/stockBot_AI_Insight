@@ -34,6 +34,7 @@ from . import analytics as A
 from . import archive
 from . import quality as Q
 from . import redis_client as R
+from . import translate
 from .claude_cli import ClaudeCLIError, final_json_schema, model_name, run_checked
 from .line_broadcast import LineBroadcastError, broadcast, notify_failure
 from .logging_setup import get_logger
@@ -133,6 +134,10 @@ def main() -> int:
         usage.get("inputTokens"), usage.get("outputTokens"), usage.get("thinkingTokens"),
         usage.get("totalCostUsd", 0.0), time.monotonic() - start,
     )
+    if result.get("recommendations"):
+        th = translate.final_th(result)
+        if th:
+            result["th"] = th
     archive.write("final", today, {"prompt": prompt, "result": result})
 
     try:

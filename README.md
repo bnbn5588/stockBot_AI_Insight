@@ -37,6 +37,8 @@ worker/
   redis_client.py    Redis key names + TTL.
   disk_check.py      Daily host disk check — LINE push to the admin only when
                      usage reaches DISK_WARN_PERCENT (default 90).
+  translate.py       Thai versions of the model-written text (`th` field) for the
+                     dashboard's TH/EN switch — one extra call per step, non-fatal.
   archive.py         Permanent per-day JSONL record of every step (inputs,
                      prompt, answer, headlines) — see "Run archive".
   logging_setup.py   Shared logger — writes to log/worker.log (rotated) + stdout.
@@ -295,12 +297,20 @@ bleeds into the next trading day.
 
 | Key                              | Written by      | Contents                                                              |
 |------------------------------------|-----------------|-------------------------------------------------------------------------|
-| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `selection` (the rule hits per selected ticker), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
+| `ai-analysis:{date}`              | `main.py`       | `generatedAt`, `marketSummary`, `topPicks`, `riskWatch`, `portfolioNote`, `selection` (the rule hits per selected ticker), `th` (Thai text, see below), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field — it lives only in `ai-analysis-prompt:{date}` instead of being duplicated. |
 | `ai-analysis-prompt:{date}`       | `main.py`       | The prompt string, stored on its own key for easy inspection without pulling the whole result. |
 | `ai-analysis-news:{date}`         | `main_news.py`  | `generatedAt`, `newsHighlights` (each `ticker`, `summary`, `effect`, `materiality`, `source`, `publishedDate`, `recommendation`, and `headlines` — the cited articles' `title`/`publisher`/`published`/`url`), `newsSource` (`yahoo-headlines` or `web-search` fallback), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-news-prompt:{date}` instead. |
 | `ai-analysis-news-prompt:{date}`  | `main_news.py`  | The news-only prompt string, stored on its own key. |
 | `ai-analysis-final:{date}`        | `main_final.py` | `generatedAt`, `summary`, `recommendations` (each `ticker`/`stance`/`reason`), `qualityIssues`, `model`, `fetchedAt`, `tokenUsage`. No `prompt` field, same reasoning — lives in `ai-analysis-final-prompt:{date}` instead. |
 | `ai-analysis-final-prompt:{date}` | `main_final.py` | The final-synthesis prompt string, stored on its own key. |
+
+`th` (all three result keys, added by `translate.py`): the Thai version of every
+model-written string — analysis `{marketSummary, portfolioNote, topPicks: {ticker: reason},
+riskWatch: {ticker: reason}}`, news `{ticker: {summary, recommendation}}`, final `{summary,
+recommendations: {ticker: reason}}`. Tickers, figures, BUY/SELL/HOLD, ADX/DI and
+favor/caution stay in English. One extra Claude call per step (~$0.03 equivalent, ~40s);
+if it fails or misses an item, `th` is left out and the dashboard shows English. The LINE
+broadcast stays English.
 
 `tokenUsage` (both result keys): `inputTokens`, `outputTokens`,
 `cacheCreationInputTokens`, `cacheReadInputTokens`, `thinkingTokens`, `totalCostUsd`.
