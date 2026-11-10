@@ -66,8 +66,8 @@ def top_picks(all_data: A.AllData) -> List[Pick]:
         last = rows[-1]
         if last.signal != "BUY" or last.regime != "UP" or _di_gap(last) <= 0:
             continue
-        short = ([f"ADX {last.adx:.0f} < {CLEAN_ADX}"] if last.adx < CLEAN_ADX else []) + \
-                ([f"agree {last.confidence:.0f} < {CLEAN_AGREE}"] if last.confidence < CLEAN_AGREE else []) + \
+        short = ([f"ADX {last.adx:.1f} < {CLEAN_ADX}"] if last.adx < CLEAN_ADX else []) + \
+                ([f"agree {last.confidence:.1f} < {CLEAN_AGREE}"] if last.confidence < CLEAN_AGREE else []) + \
                 ([f"DI gap {_di_gap(last):.1f} < {CLEAN_DI_GAP}"] if _di_gap(last) < CLEAN_DI_GAP else [])
         clean = not short
         why = ["clean uptrend" if clean else f"weak uptrend ({', '.join(short)})"]
